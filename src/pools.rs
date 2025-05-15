@@ -1,7 +1,4 @@
-use crate::{
-    constants::SOL_MINT,
-    dex::raydium::{clmm_info::POOL_TICK_ARRAY_BITMAP_SEED, raydium_clmm_program_id},
-};
+use crate::dex::raydium::{clmm_info::POOL_TICK_ARRAY_BITMAP_SEED, raydium_clmm_program_id};
 use solana_program::pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -91,7 +88,7 @@ pub struct MintPoolData {
 
 impl MintPoolData {
     pub fn new(mint: &str, wallet_account: &str) -> anyhow::Result<Self> {
-        let sol_mint = Pubkey::from_str(SOL_MINT)?;
+        let sol_mint = spl_token::native_mint::id();
         let wallet_pk = Pubkey::from_str(wallet_account)?;
         let wallet_wsol_pk =
             spl_associated_token_account::get_associated_token_address(&wallet_pk, &sol_mint);
@@ -109,166 +106,136 @@ impl MintPoolData {
         })
     }
 
-    pub fn add_raydium_pool(
-        &mut self,
-        pool: &str,
-        token_vault: &str,
-        sol_vault: &str,
-    ) -> anyhow::Result<()> {
+    pub fn add_raydium_pool(&mut self, pool: &Pubkey, token_vault: &Pubkey, sol_vault: &Pubkey) {
         self.raydium_pools.push(RaydiumPool {
-            pool: Pubkey::from_str(pool)?,
-            token_vault: Pubkey::from_str(token_vault)?,
-            sol_vault: Pubkey::from_str(sol_vault)?,
+            pool: *pool,
+            token_vault: *token_vault,
+            sol_vault: *sol_vault,
         });
-        Ok(())
     }
 
     pub fn add_raydium_cp_pool(
         &mut self,
-        pool: &str,
-        token_vault: &str,
-        sol_vault: &str,
-        amm_config: &str,
-        observation: &str,
-    ) -> anyhow::Result<()> {
+        pool: &Pubkey,
+        token_vault: &Pubkey,
+        sol_vault: &Pubkey,
+        amm_config: &Pubkey,
+        observation: &Pubkey,
+    ) {
         self.raydium_cp_pools.push(RaydiumCpPool {
-            pool: Pubkey::from_str(pool)?,
-            token_vault: Pubkey::from_str(token_vault)?,
-            sol_vault: Pubkey::from_str(sol_vault)?,
-            amm_config: Pubkey::from_str(amm_config)?,
-            observation: Pubkey::from_str(observation)?,
+            pool: *pool,
+            token_vault: *token_vault,
+            sol_vault: *sol_vault,
+            amm_config: *amm_config,
+            observation: *observation,
         });
-        Ok(())
     }
 
     pub fn add_pump_pool(
         &mut self,
-        pool: &str,
-        token_vault: &str,
-        sol_vault: &str,
-        fee_token_wallet: &str,
-        coin_creator_vault_ata: &str,
-        coin_creator_authority: &str,
-    ) -> anyhow::Result<()> {
+        pool: &Pubkey,
+        token_vault: &Pubkey,
+        sol_vault: &Pubkey,
+        fee_token_wallet: &Pubkey,
+        coin_creator_vault_ata: &Pubkey,
+        coin_creator_authority: &Pubkey,
+    ) {
         self.pump_pools.push(PumpPool {
-            pool: Pubkey::from_str(pool)?,
-            token_vault: Pubkey::from_str(token_vault)?,
-            sol_vault: Pubkey::from_str(sol_vault)?,
-            fee_token_wallet: Pubkey::from_str(fee_token_wallet)?,
-            coin_creator_vault_ata: Pubkey::from_str(coin_creator_vault_ata)?,
-            coin_creator_vault_authority: Pubkey::from_str(coin_creator_authority)?,
-        });
-        Ok(())
+            pool: *pool,
+            token_vault: *token_vault,
+            sol_vault: *sol_vault,
+            fee_token_wallet: *fee_token_wallet,
+            coin_creator_vault_ata: *coin_creator_vault_ata,
+            coin_creator_vault_authority: *coin_creator_authority,
+        })
     }
 
     pub fn add_dlmm_pool(
         &mut self,
-        pair: &str,
-        token_vault: &str,
-        sol_vault: &str,
-        oracle: &str,
-        bin_arrays: Vec<&str>,
-    ) -> anyhow::Result<()> {
-        let bin_array_pubkeys = bin_arrays
-            .iter()
-            .map(|&s| Pubkey::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
-
+        pair: &Pubkey,
+        token_vault: &Pubkey,
+        sol_vault: &Pubkey,
+        oracle: &Pubkey,
+        bin_array_pubkeys: &[Pubkey],
+    ) {
         self.dlmm_pairs.push(DlmmPool {
-            pair: Pubkey::from_str(pair)?,
-            token_vault: Pubkey::from_str(token_vault)?,
-            sol_vault: Pubkey::from_str(sol_vault)?,
-            oracle: Pubkey::from_str(oracle)?,
-            bin_arrays: bin_array_pubkeys,
+            pair: *pair,
+            token_vault: *token_vault,
+            sol_vault: *sol_vault,
+            oracle: *oracle,
+            bin_arrays: bin_array_pubkeys.to_vec(),
         });
-        Ok(())
     }
 
     pub fn add_whirlpool_pool(
         &mut self,
-        pool: &str,
-        oracle: &str,
-        x_vault: &str,
-        y_vault: &str,
-        tick_arrays: Vec<&str>,
-    ) -> anyhow::Result<()> {
-        let tick_array_pubkeys = tick_arrays
-            .iter()
-            .map(|&s| Pubkey::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
-
+        pool: &Pubkey,
+        oracle: &Pubkey,
+        x_vault: &Pubkey,
+        y_vault: &Pubkey,
+        tick_arrays: &[Pubkey],
+    ) {
         self.whirlpool_pools.push(WhirlpoolPool {
-            pool: Pubkey::from_str(pool)?,
-            oracle: Pubkey::from_str(oracle)?,
-            x_vault: Pubkey::from_str(x_vault)?,
-            y_vault: Pubkey::from_str(y_vault)?,
-            tick_arrays: tick_array_pubkeys,
+            pool: *pool,
+            oracle: *oracle,
+            x_vault: *x_vault,
+            y_vault: *y_vault,
+            tick_arrays: tick_arrays.to_vec(),
         });
-        Ok(())
     }
 
     pub fn add_raydium_clmm_pool(
         &mut self,
-        pool: &str,
-        amm_config: &str,
-        observation_state: &str,
-        x_vault: &str,
-        y_vault: &str,
-        tick_arrays: Vec<&str>,
-    ) -> anyhow::Result<()> {
-        let pool_pubkey = Pubkey::from_str(pool)?;
+        pool: &Pubkey,
+        amm_config: &Pubkey,
+        observation_state: &Pubkey,
+        x_vault: &Pubkey,
+        y_vault: &Pubkey,
+        tick_arrays: &[Pubkey],
+    ) {
         let bitmap_extension = Pubkey::find_program_address(
-            &[
-                POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(),
-                &pool_pubkey.as_ref(),
-            ],
+            &[POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(), pool.as_ref()],
             &raydium_clmm_program_id(),
         )
         .0;
-        let tick_array_pubkeys = tick_arrays
-            .iter()
-            .map(|&s| Pubkey::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
 
         self.raydium_clmm_pools.push(RaydiumClmmPool {
-            pool: pool_pubkey,
-            amm_config: Pubkey::from_str(amm_config)?,
-            observation_state: Pubkey::from_str(observation_state)?,
-            x_vault: Pubkey::from_str(x_vault)?,
-            y_vault: Pubkey::from_str(y_vault)?,
+            pool: *pool,
+            amm_config: *amm_config,
+            observation_state: *observation_state,
+            x_vault: *x_vault,
+            y_vault: *y_vault,
             bitmap_extension,
-            tick_arrays: tick_array_pubkeys,
+            tick_arrays: tick_arrays.to_vec(),
         });
-        Ok(())
     }
 
     pub fn add_meteora_damm_pool(
         &mut self,
-        pool: &str,
-        token_x_vault: &str,
-        token_sol_vault: &str,
-        token_x_token_vault: &str,
-        token_sol_token_vault: &str,
-        token_x_lp_mint: &str,
-        token_sol_lp_mint: &str,
-        token_x_pool_lp: &str,
-        token_sol_pool_lp: &str,
-        admin_token_fee_x: &str,
-        admin_token_fee_sol: &str,
-    ) -> anyhow::Result<()> {
+        pool: &Pubkey,
+        token_x_vault: &Pubkey,
+        token_sol_vault: &Pubkey,
+        token_x_token_vault: &Pubkey,
+        token_sol_token_vault: &Pubkey,
+        token_x_lp_mint: &Pubkey,
+        token_sol_lp_mint: &Pubkey,
+        token_x_pool_lp: &Pubkey,
+        token_sol_pool_lp: &Pubkey,
+        admin_token_fee_x: &Pubkey,
+        admin_token_fee_sol: &Pubkey,
+    ) {
         self.meteora_damm_pools.push(MeteoraDAmmPool {
-            pool: Pubkey::from_str(pool)?,
-            token_x_vault: Pubkey::from_str(token_x_vault)?,
-            token_sol_vault: Pubkey::from_str(token_sol_vault)?,
-            token_x_token_vault: Pubkey::from_str(token_x_token_vault)?,
-            token_sol_token_vault: Pubkey::from_str(token_sol_token_vault)?,
-            token_x_lp_mint: Pubkey::from_str(token_x_lp_mint)?,
-            token_sol_lp_mint: Pubkey::from_str(token_sol_lp_mint)?,
-            token_x_pool_lp: Pubkey::from_str(token_x_pool_lp)?,
-            token_sol_pool_lp: Pubkey::from_str(token_sol_pool_lp)?,
-            admin_token_fee_x: Pubkey::from_str(admin_token_fee_x)?,
-            admin_token_fee_sol: Pubkey::from_str(admin_token_fee_sol)?,
-        });
-        Ok(())
+            pool: *pool,
+            token_x_vault: *token_x_vault,
+            token_sol_vault: *token_sol_vault,
+            token_x_token_vault: *token_x_token_vault,
+            token_sol_token_vault: *token_sol_token_vault,
+            token_x_lp_mint: *token_x_lp_mint,
+            token_sol_lp_mint: *token_sol_lp_mint,
+            token_x_pool_lp: *token_x_pool_lp,
+            token_sol_pool_lp: *token_sol_pool_lp,
+            admin_token_fee_x: *admin_token_fee_x,
+            admin_token_fee_sol: *admin_token_fee_sol,
+        })
     }
 }

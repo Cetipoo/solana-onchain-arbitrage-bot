@@ -1,13 +1,14 @@
-use solana_program::pubkey::Pubkey;
-use std::str::FromStr;
+use solana_program::{pubkey, pubkey::Pubkey};
 
-pub const PUMP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
-pub const PUMP_FEE_WALLET: &str = "JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU";
+const PUMP_PROGRAM_ID: Pubkey = pubkey!("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
+const PUMP_FEE_WALLET: Pubkey = pubkey!("JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU");
 
+#[inline(always)]
 pub fn pump_program_id() -> Pubkey {
-    Pubkey::from_str(PUMP_PROGRAM_ID).unwrap()
+    PUMP_PROGRAM_ID
 }
 
+#[inline(always)]
 pub fn pump_fee_wallet() -> Pubkey {
-    Pubkey::from_str(PUMP_FEE_WALLET).unwrap()
+    PUMP_FEE_WALLET
 }

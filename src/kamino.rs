@@ -1,20 +1,19 @@
 use solana_program::instruction::{AccountMeta, Instruction};
-use solana_program::pubkey::Pubkey;
 use solana_program::sysvar;
-use std::str::FromStr;
-use crate::constants::SOL_MINT;
+use solana_program::{pubkey, pubkey::Pubkey};
 
-pub const KAMINO_LENDING_PROGRAM_ID: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+const KAMINO_LENDING_PROGRAM_ID: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 
-pub const KAMINO_LENDING_MARKET: &str = "H6rHXmXoCQvq8Ue81MqNh7ow5ysPa1dSozwW3PU1dDH6";
-pub const KAMINO_LENDING_MARKET_AUTHORITY: &str = "Dx8iy2o46sK1DzWbEcznqSKeLbLVeu7otkibA3WohGAj";
+const KAMINO_LENDING_MARKET: Pubkey = pubkey!("H6rHXmXoCQvq8Ue81MqNh7ow5ysPa1dSozwW3PU1dDH6");
+const KAMINO_LENDING_MARKET_AUTHORITY: Pubkey =
+    pubkey!("Dx8iy2o46sK1DzWbEcznqSKeLbLVeu7otkibA3WohGAj");
 
-pub const KAMINO_SOL_RESERVE: &str = "6gTJfuPHEg6uRAijRkMqNc9kan4sVZejKMxmvx2grT1p";
-pub const KAMINO_SOL_RESERVE_LIQUIDITY: &str = "ywaaLvG7t1vXJo8sT3UzE8yzzZtxLM7Fmev64Jbooye";
-pub const KAMINO_SOL_FEE_RECEIVER: &str = "EQ7hw63aBS7aPQqXsoxaaBxiwbEzaAiY9Js6tCekkqxf";
+const KAMINO_SOL_RESERVE: Pubkey = pubkey!("6gTJfuPHEg6uRAijRkMqNc9kan4sVZejKMxmvx2grT1p");
+const KAMINO_SOL_RESERVE_LIQUIDITY: Pubkey = pubkey!("ywaaLvG7t1vXJo8sT3UzE8yzzZtxLM7Fmev64Jbooye");
+const KAMINO_SOL_FEE_RECEIVER: Pubkey = pubkey!("EQ7hw63aBS7aPQqXsoxaaBxiwbEzaAiY9Js6tCekkqxf");
 
-pub const KAMINO_REFERRER_TOKEN_STATE: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
-pub const KAMINO_REFERRER_ACCOUNT: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+const KAMINO_REFERRER_TOKEN_STATE: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
+const KAMINO_REFERRER_ACCOUNT: Pubkey = pubkey!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 
 pub const KAMINO_ADDITIONAL_COMPUTE_UNITS: u32 = 80_000;
 
@@ -45,15 +44,15 @@ pub fn get_kamino_flashloan_borrow_ix(
     wallet_pk: &Pubkey,
     destination_token_account: Pubkey,
 ) -> anyhow::Result<Instruction> {
-    let kamino_program_id = Pubkey::from_str(KAMINO_LENDING_PROGRAM_ID)?;
-    let lending_market = Pubkey::from_str(KAMINO_LENDING_MARKET)?;
-    let lending_market_authority = Pubkey::from_str(KAMINO_LENDING_MARKET_AUTHORITY)?;
-    let reserve = Pubkey::from_str(KAMINO_SOL_RESERVE)?;
-    let reserve_liquidity_mint = Pubkey::from_str(SOL_MINT)?;
-    let reserve_source_liquidity = Pubkey::from_str(KAMINO_SOL_RESERVE_LIQUIDITY)?;
-    let fee_receiver = Pubkey::from_str(KAMINO_SOL_FEE_RECEIVER)?;
-    let referrer_token_state = Pubkey::from_str(KAMINO_REFERRER_TOKEN_STATE)?;
-    let referrer_account = Pubkey::from_str(KAMINO_REFERRER_ACCOUNT)?;
+    let kamino_program_id = KAMINO_LENDING_PROGRAM_ID;
+    let lending_market = KAMINO_LENDING_MARKET;
+    let lending_market_authority = KAMINO_LENDING_MARKET_AUTHORITY;
+    let reserve = KAMINO_SOL_RESERVE;
+    let reserve_liquidity_mint = spl_token::native_mint::id();
+    let reserve_source_liquidity = KAMINO_SOL_RESERVE_LIQUIDITY;
+    let fee_receiver = KAMINO_SOL_FEE_RECEIVER;
+    let referrer_token_state = KAMINO_REFERRER_TOKEN_STATE;
+    let referrer_account = KAMINO_REFERRER_ACCOUNT;
 
     let accounts = vec![
         AccountMeta::new(*wallet_pk, true), // userTransferAuthority
@@ -82,15 +81,15 @@ pub fn get_kamino_flashloan_repay_ix(
     source_token_account: Pubkey,
     borrow_instruction_index: u8,
 ) -> anyhow::Result<Instruction> {
-    let kamino_program_id = Pubkey::from_str(KAMINO_LENDING_PROGRAM_ID)?;
-    let lending_market = Pubkey::from_str(KAMINO_LENDING_MARKET)?;
-    let lending_market_authority = Pubkey::from_str(KAMINO_LENDING_MARKET_AUTHORITY)?;
-    let reserve = Pubkey::from_str(KAMINO_SOL_RESERVE)?;
-    let reserve_liquidity_mint = Pubkey::from_str(SOL_MINT)?;
-    let reserve_destination_liquidity = Pubkey::from_str(KAMINO_SOL_RESERVE_LIQUIDITY)?;
-    let fee_receiver = Pubkey::from_str(KAMINO_SOL_FEE_RECEIVER)?;
-    let referrer_token_state = Pubkey::from_str(KAMINO_REFERRER_TOKEN_STATE)?;
-    let referrer_account = Pubkey::from_str(KAMINO_REFERRER_ACCOUNT)?;
+    let kamino_program_id = KAMINO_LENDING_PROGRAM_ID;
+    let lending_market = KAMINO_LENDING_MARKET;
+    let lending_market_authority = KAMINO_LENDING_MARKET_AUTHORITY;
+    let reserve = KAMINO_SOL_RESERVE;
+    let reserve_liquidity_mint = spl_token::native_mint::id();
+    let reserve_destination_liquidity = KAMINO_SOL_RESERVE_LIQUIDITY;
+    let fee_receiver = KAMINO_SOL_FEE_RECEIVER;
+    let referrer_token_state = KAMINO_REFERRER_TOKEN_STATE;
+    let referrer_account = KAMINO_REFERRER_ACCOUNT;
 
     let accounts = vec![
         AccountMeta::new(*wallet_pk, true), // userTransferAuthority
