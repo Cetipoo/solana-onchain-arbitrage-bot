@@ -27,11 +27,15 @@ use crate::dex::raydium::constants::{
 };
 use crate::dex::whirlpool::constants::whirlpool_program_id;
 use solana_program::instruction::AccountMeta;
-use solana_program::pubkey::Pubkey;
 use solana_program::system_program;
+use solana_program::{pubkey, pubkey::Pubkey};
 use spl_associated_token_account::ID as associated_token_program_id;
 use spl_token::ID as token_program_id;
-use std::str::FromStr;
+
+const EXECUTOR_PROGRAM_ID: Pubkey = pubkey!("MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz");
+const FEE_COLLECTOR: Pubkey = pubkey!("6AGB9kqgSp2mQXwYpdrV4QVV8urvCaDS35U1wsLssy6H");
+const PUMP_FUN_GLOBAL_CONFIG: Pubkey = pubkey!("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw");
+const PUMP_AUTHORITY: Pubkey = pubkey!("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR");
 
 pub async fn build_and_send_transaction(
     wallet_kp: &Keypair,
@@ -153,14 +157,6 @@ fn create_swap_instruction(
 ) -> anyhow::Result<Instruction> {
     debug!("Creating swap instruction for all DEX types");
 
-    let executor_program_id =
-        Pubkey::from_str("MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz").unwrap();
-    let fee_collector = Pubkey::from_str("6AGB9kqgSp2mQXwYpdrV4QVV8urvCaDS35U1wsLssy6H").unwrap();
-
-    let pump_global_config =
-        Pubkey::from_str("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw").unwrap();
-    let pump_authority = Pubkey::from_str("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR").unwrap();
-
     let wallet = wallet_kp.pubkey();
     let sol_mint_pubkey = sol_mint();
     let wallet_sol_account = mint_pool_data.wallet_wsol_account;
@@ -168,7 +164,7 @@ fn create_swap_instruction(
     let mut accounts = vec![
         AccountMeta::new_readonly(wallet, true), // 0. Wallet (signer)
         AccountMeta::new_readonly(sol_mint_pubkey, false), // 1. SOL mint
-        AccountMeta::new(fee_collector, false),  // 2. Fee collector
+        AccountMeta::new(FEE_COLLECTOR, false),  // 2. Fee collector
         AccountMeta::new(wallet_sol_account, false), // 3. Wallet SOL account
         AccountMeta::new_readonly(token_program_id, false), // 4. Token program
         AccountMeta::new_readonly(system_program::ID, false), // 5. System program
@@ -200,8 +196,8 @@ fn create_swap_instruction(
 
     for pool in &mint_pool_data.pump_pools {
         accounts.push(AccountMeta::new_readonly(pump_program_id(), false));
-        accounts.push(AccountMeta::new_readonly(pump_global_config, false));
-        accounts.push(AccountMeta::new_readonly(pump_authority, false));
+        accounts.push(AccountMeta::new_readonly(PUMP_FUN_GLOBAL_CONFIG, false));
+        accounts.push(AccountMeta::new_readonly(PUMP_AUTHORITY, false));
         accounts.push(AccountMeta::new_readonly(pump_fee_wallet(), false));
         accounts.push(AccountMeta::new_readonly(pool.pool, false));
         accounts.push(AccountMeta::new(pool.token_vault, false));
@@ -288,7 +284,7 @@ fn create_swap_instruction(
     data.extend_from_slice(if no_failure_mode { &[1] } else { &[0] });
 
     Ok(Instruction {
-        program_id: executor_program_id,
+        program_id: EXECUTOR_PROGRAM_ID,
         accounts,
         data,
     })

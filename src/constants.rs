@@ -1,8 +1,6 @@
 use solana_program::pubkey::Pubkey;
-use std::str::FromStr;
 
-pub const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-
+#[inline(always)]
 pub fn sol_mint() -> Pubkey {
-    Pubkey::from_str(SOL_MINT).unwrap()
+    spl_token::native_mint::id()
 }

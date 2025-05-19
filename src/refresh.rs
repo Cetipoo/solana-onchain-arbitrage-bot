@@ -12,7 +12,6 @@ use crate::dex::whirlpool::{
 use crate::pools::*;
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use spl_associated_token_account;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -81,26 +80,23 @@ pub async fn initialize_pool_data(
                                 );
 
                             pool_data.add_pump_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &fee_token_wallet.to_string(),
-                                &coin_creator_vault_ata.to_string(),
-                                &amm_info.coin_creator_vault_authority.to_string(),
-                            )?;
-                            info!("Pump pool added: {}", pool_address);
-                            info!("    Base mint: {}", amm_info.base_mint.to_string());
-                            info!("    Quote mint: {}", amm_info.quote_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Fee token wallet: {}", fee_token_wallet.to_string());
-                            info!(
-                                "    Coin creator vault ata: {}",
-                                coin_creator_vault_ata.to_string()
+                                &pump_pool_pubkey,
+                                &token_vault,
+                                &sol_vault,
+                                &fee_token_wallet,
+                                &coin_creator_vault_ata,
+                                &amm_info.coin_creator_vault_authority,
                             );
+                            info!("Pump pool added: {}", pool_address);
+                            info!("    Base mint: {}", amm_info.base_mint);
+                            info!("    Quote mint: {}", amm_info.quote_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Fee token wallet: {}", fee_token_wallet);
+                            info!("    Coin creator vault ata: {}", coin_creator_vault_ata);
                             info!(
                                 "    Coin creator vault authority: {}",
-                                amm_info.coin_creator_vault_authority.to_string()
+                                amm_info.coin_creator_vault_authority
                             );
                             info!("    Initialized Pump pool: {}\n", pump_pool_pubkey);
                         }
@@ -173,15 +169,15 @@ pub async fn initialize_pool_data(
                             };
 
                             pool_data.add_raydium_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                            )?;
-                            info!("Raydium pool added: {}", pool_address);
-                            info!("    Coin mint: {}", amm_info.coin_mint.to_string());
-                            info!("    PC mint: {}", amm_info.pc_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
+                                &raydium_pool_pubkey,
+                                &token_vault,
+                                &sol_vault,
+                            );
+                            info!("Raydium pool added: {}", raydium_pool_pubkey);
+                            info!("    Coin mint: {}", amm_info.coin_mint);
+                            info!("    PC mint: {}", amm_info.pc_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
                             info!("    Initialized Raydium pool: {}\n", raydium_pool_pubkey);
                         }
                         Err(e) => {
@@ -251,20 +247,17 @@ pub async fn initialize_pool_data(
                             };
 
                             pool_data.add_raydium_cp_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &amm_info.amm_config.to_string(),
-                                &amm_info.observation_key.to_string(),
-                            )?;
-                            info!("Raydium CP pool added: {}", pool_address);
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    AMM Config: {}", amm_info.amm_config.to_string());
-                            info!(
-                                "    Observation Key: {}\n",
-                                amm_info.observation_key.to_string()
+                                &raydium_cp_pool_pubkey,
+                                &token_vault,
+                                &sol_vault,
+                                &amm_info.amm_config,
+                                &amm_info.observation_key,
                             );
+                            info!("Raydium CP pool added: {}", raydium_cp_pool_pubkey);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM Config: {}", amm_info.amm_config);
+                            info!("    Observation Key: {}\n", amm_info.observation_key);
                         }
                         Err(e) => {
                             error!(
@@ -319,28 +312,23 @@ pub async fn initialize_pool_data(
                                 }
                             };
 
-                            let bin_array_strings: Vec<String> =
-                                bin_arrays.iter().map(|pubkey| pubkey.to_string()).collect();
-                            let bin_array_str_refs: Vec<&str> =
-                                bin_array_strings.iter().map(|s| s.as_str()).collect();
-
                             pool_data.add_dlmm_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &amm_info.oracle.to_string(),
-                                bin_array_str_refs,
-                            )?;
+                                &dlmm_pool_pubkey,
+                                &token_vault,
+                                &sol_vault,
+                                &amm_info.oracle,
+                                &bin_arrays,
+                            );
 
                             info!("DLMM pool added: {}", pool_address);
-                            info!("    Token X Mint: {}", amm_info.token_x_mint.to_string());
-                            info!("    Token Y Mint: {}", amm_info.token_y_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Oracle: {}", amm_info.oracle.to_string());
+                            info!("    Token X Mint: {}", amm_info.token_x_mint);
+                            info!("    Token Y Mint: {}", amm_info.token_y_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Oracle: {}", amm_info.oracle);
                             info!("    Active ID: {}", amm_info.active_id);
 
-                            for (i, array) in bin_array_strings.iter().enumerate() {
+                            for (i, array) in bin_arrays.iter().enumerate() {
                                 info!("    Bin Array {}: {}", i, array);
                             }
                             info!("");
@@ -424,30 +412,27 @@ pub async fn initialize_pool_data(
                                 &whirlpool_program_id(),
                             );
 
-                            let tick_array_strings: Vec<String> = whirlpool_tick_arrays
+                            let tick_arrays: Vec<Pubkey> = whirlpool_tick_arrays
                                 .iter()
-                                .map(|meta| meta.pubkey.to_string())
+                                .map(|meta| meta.pubkey)
                                 .collect();
 
-                            let tick_array_str_refs: Vec<&str> =
-                                tick_array_strings.iter().map(|s| s.as_str()).collect();
-
                             pool_data.add_whirlpool_pool(
-                                pool_address,
-                                &whirlpool_oracle.to_string(),
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                tick_array_str_refs,
-                            )?;
+                                &whirlpool_pool_pubkey,
+                                &whirlpool_oracle,
+                                &token_vault,
+                                &sol_vault,
+                                &tick_arrays,
+                            );
 
                             info!("Whirlpool pool added: {}", pool_address);
-                            info!("    Token mint A: {}", whirlpool.token_mint_a.to_string());
-                            info!("    Token mint B: {}", whirlpool.token_mint_b.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Oracle: {}", whirlpool_oracle.to_string());
+                            info!("    Token mint A: {}", whirlpool.token_mint_a);
+                            info!("    Token mint B: {}", whirlpool.token_mint_b);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Oracle: {}", whirlpool_oracle);
 
-                            for (i, array) in tick_array_strings.iter().enumerate() {
+                            for (i, array) in tick_arrays.iter().enumerate() {
                                 info!("    Tick Array {}: {}", i, array);
                             }
                             info!("");
@@ -475,8 +460,9 @@ pub async fn initialize_pool_data(
     if let Some(pools) = raydium_clmm_pools {
         for pool_address in pools {
             let raydium_clmm_program_id = raydium_clmm_program_id();
+            let clmm_pool_pubkey = Pubkey::from_str(pool_address)?;
 
-            match rpc_client.get_account(&Pubkey::from_str(pool_address)?) {
+            match rpc_client.get_account(&clmm_pool_pubkey) {
                 Ok(account) => {
                     if account.owner != raydium_clmm_program_id {
                         error!(
@@ -517,41 +503,24 @@ pub async fn initialize_pool_data(
                                 &raydium_clmm_program_id,
                             )?;
 
-                            let tick_array_strings: Vec<String> = tick_array_pubkeys
-                                .iter()
-                                .map(|pubkey| pubkey.to_string())
-                                .collect();
-
-                            let tick_array_str_refs: Vec<&str> =
-                                tick_array_strings.iter().map(|s| s.as_str()).collect();
-
                             pool_data.add_raydium_clmm_pool(
-                                pool_address,
-                                &raydium_clmm.amm_config.to_string(),
-                                &raydium_clmm.observation_key.to_string(),
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                tick_array_str_refs,
-                            )?;
+                                &clmm_pool_pubkey,
+                                &raydium_clmm.amm_config,
+                                &raydium_clmm.observation_key,
+                                &token_vault,
+                                &sol_vault,
+                                &tick_array_pubkeys,
+                            );
 
                             info!("Raydium CLMM pool added: {}", pool_address);
-                            info!(
-                                "    Token mint 0: {}",
-                                raydium_clmm.token_mint_0.to_string()
-                            );
-                            info!(
-                                "    Token mint 1: {}",
-                                raydium_clmm.token_mint_1.to_string()
-                            );
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    AMM config: {}", raydium_clmm.amm_config.to_string());
-                            info!(
-                                "    Observation key: {}",
-                                raydium_clmm.observation_key.to_string()
-                            );
+                            info!("    Token mint 0: {}", raydium_clmm.token_mint_0);
+                            info!("    Token mint 1: {}", raydium_clmm.token_mint_1);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM config: {}", raydium_clmm.amm_config);
+                            info!("    Observation key: {}", raydium_clmm.observation_key);
 
-                            for (i, array) in tick_array_strings.iter().enumerate() {
+                            for (i, array) in tick_array_pubkeys.iter().enumerate() {
                                 info!("    Tick Array {}: {}", i, array);
                             }
                             info!("");
@@ -630,10 +599,10 @@ pub async fn initialize_pool_data(
                             let sol_vault_data = rpc_client.get_account(&sol_vault)?;
 
                             let x_vault_obj = meteora_vault_cpi::Vault::deserialize_unchecked(
-                                &mut x_vault_data.data.as_slice(),
+                                x_vault_data.data.as_slice(),
                             )?;
                             let sol_vault_obj = meteora_vault_cpi::Vault::deserialize_unchecked(
-                                &mut sol_vault_data.data.as_slice(),
+                                sol_vault_data.data.as_slice(),
                             )?;
 
                             let x_token_vault = x_vault_obj.token_vault;
@@ -654,28 +623,28 @@ pub async fn initialize_pool_data(
                             };
 
                             pool_data.add_meteora_damm_pool(
-                                pool_address,
-                                &x_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &x_token_vault.to_string(),
-                                &sol_token_vault.to_string(),
-                                &x_lp_mint.to_string(),
-                                &sol_lp_mint.to_string(),
-                                &x_pool_lp.to_string(),
-                                &sol_pool_lp.to_string(),
-                                &x_admin_fee.to_string(),
-                                &sol_admin_fee.to_string(),
-                            )?;
+                                &meteora_damm_pool_pubkey,
+                                &x_vault,
+                                &sol_vault,
+                                &x_token_vault,
+                                &sol_token_vault,
+                                &x_lp_mint,
+                                &sol_lp_mint,
+                                &x_pool_lp,
+                                &sol_pool_lp,
+                                &x_admin_fee,
+                                &sol_admin_fee,
+                            );
 
                             info!("Meteora DAMM pool added: {}", pool_address);
-                            info!("    Token X vault: {}", x_token_vault.to_string());
-                            info!("    SOL vault: {}", sol_token_vault.to_string());
-                            info!("    Token X LP mint: {}", x_lp_mint.to_string());
-                            info!("    SOL LP mint: {}", sol_lp_mint.to_string());
-                            info!("    Token X pool LP: {}", x_pool_lp.to_string());
-                            info!("    SOL pool LP: {}", sol_pool_lp.to_string());
-                            info!("    Token X admin fee: {}", x_admin_fee.to_string());
-                            info!("    SOL admin fee: {}", sol_admin_fee.to_string());
+                            info!("    Token X vault: {}", x_token_vault);
+                            info!("    SOL vault: {}", sol_token_vault);
+                            info!("    Token X LP mint: {}", x_lp_mint);
+                            info!("    SOL LP mint: {}", sol_lp_mint);
+                            info!("    Token X pool LP: {}", x_pool_lp);
+                            info!("    SOL pool LP: {}", sol_pool_lp);
+                            info!("    Token X admin fee: {}", x_admin_fee);
+                            info!("    SOL admin fee: {}", sol_admin_fee);
                             info!("");
                         }
                         Err(e) => {
