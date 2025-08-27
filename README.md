@@ -1,6 +1,6 @@
 # Solana Onchain Arbitrage Bot
 
-[![Discord](https://dcbadge.limes.pink/api/server/https://discord.com/invite/solanamevbot)](https://discord.com/invite/solanamevbot)
+[![Discord](https://dcbadge.limes.pink/api/server/https://discord.gg/ejEuhN5kcV)](https://discord.gg/ejEuhN5kcV)
 
 A simple Solana onchain arbitrage bot for arbitrage opportunities. This bot calculate the most optimal trade size between various DEX pools on Solana and executes trades when profitable opportunities are found. This repository utilizes the onchain program for executing arbitrage trades.
 
