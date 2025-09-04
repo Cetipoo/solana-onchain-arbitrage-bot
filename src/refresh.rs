@@ -9,6 +9,7 @@ use crate::dex::raydium::{
 };
 use crate::dex::solfi::constants::solfi_program_id;
 use crate::dex::solfi::info::SolfiInfo;
+use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::vertigo::{derive_vault_address, vertigo_program_id, VertigoInfo};
 use crate::dex::whirlpool::{
     constants::whirlpool_program_id, state::Whirlpool, update_tick_array_accounts_for_onchain,
@@ -34,6 +35,7 @@ pub async fn initialize_pool_data(
     solfi_pools: Option<&Vec<String>>,
     meteora_damm_v2_pools: Option<&Vec<String>>,
     vertigo_pools: Option<&Vec<String>>,
+    heaven_pools: Option<&Vec<String>>,
     rpc_client: Arc<RpcClient>,
 ) -> anyhow::Result<MintPoolData> {
     info!("Initializing pool data for mint: {}", mint);
@@ -1008,6 +1010,100 @@ pub async fn initialize_pool_data(
                     error!(
                         "Error fetching Vertigo pool account {}: {:?}",
                         vertigo_pool_pubkey, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    if let Some(pools) = heaven_pools {
+        for pool_address in pools {
+            let heaven_pool_pubkey = Pubkey::from_str(pool_address)?;
+
+            match rpc_client.get_account(&heaven_pool_pubkey) {
+                Ok(account) => {
+                    if account.owner != heaven_program_id() {
+                        error!(
+                            "Error: Heaven pool account is not owned by the Heaven program. Expected: {}, Actual: {}",
+                            heaven_program_id(), account.owner
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Heaven pool account is not owned by the Heaven program"
+                        ));
+                    }
+
+                    match HeavenPoolState::parse(&account.data) {
+                        Some(heaven_info) => {
+                            info!("Heaven pool added: {}", pool_address);
+                            info!("    Mint A: {}", heaven_info.mint_a.to_string());
+                            info!("    Mint B: {}", heaven_info.mint_b.to_string());
+                            info!("    Vault A: {}", heaven_info.vault_a.to_string());
+                            info!("    Vault B: {}", heaven_info.vault_b.to_string());
+                            info!("    Protocol Config: {}", heaven_info.protocol_config.to_string());
+                            info!("    Reserve A: {}", heaven_info.reserve_a);
+                            info!("    Reserve B: {}", heaven_info.reserve_b);
+
+                            // Determine which vault corresponds to token and base
+                            let (token_x_vault, token_base_vault) = 
+                                if mint_pubkey == heaven_info.mint_a {
+                                    (heaven_info.vault_a, heaven_info.vault_b)
+                                } else {
+                                    (heaven_info.vault_b, heaven_info.vault_a)
+                                };
+
+                            // Determine token_mint and base_mint
+                            let (token_mint, base_mint) = if mint_pubkey == heaven_info.mint_a {
+                                (heaven_info.mint_a, heaven_info.mint_b)
+                            } else {
+                                (heaven_info.mint_b, heaven_info.mint_a)
+                            };
+
+                            // Validate that the base mint is either SOL or USDC
+                            let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+                            if base_mint != sol_mint() && base_mint != usdc_mint {
+                                error!(
+                                    "Invalid Heaven pool: Expected SOL or USDC as base mint, but found {}",
+                                    base_mint
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "Invalid Heaven pool: Expected SOL or USDC as base mint"
+                                ));
+                            }
+
+                            // Determine token program - check if either mint is Token-2022
+                            let token_2022_program_id =
+                                Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+                            
+                            // For now, use the same token program as the mint
+                            // TODO: Check both mints to determine if Token-2022 is needed
+                            let token_program = token_program;
+
+                            pool_data.add_heaven_pool(
+                                pool_address,
+                                &heaven_info.protocol_config.to_string(),
+                                &token_x_vault.to_string(),
+                                &token_base_vault.to_string(),
+                                &token_mint.to_string(),
+                                &base_mint.to_string(),
+                                &token_program.to_string(),
+                            )?;
+                            
+                            info!("    Initialized Heaven pool: {}\n", heaven_pool_pubkey);
+                        }
+                        None => {
+                            error!(
+                                "Error parsing Heaven pool data from pool {}",
+                                heaven_pool_pubkey
+                            );
+                            return Err(anyhow::anyhow!("Failed to parse Heaven pool data"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching Heaven pool account {}: {:?}",
+                        heaven_pool_pubkey, e
                     );
                     continue;
                 }

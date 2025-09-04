@@ -122,6 +122,17 @@ pub struct VertigoPool {
 }
 
 #[derive(Debug, Clone)]
+pub struct HeavenPool {
+    pub pool: Pubkey,
+    pub protocol_config: Pubkey,
+    pub token_x_vault: Pubkey,
+    pub token_base_vault: Pubkey,
+    pub token_mint: Pubkey,
+    pub base_mint: Pubkey,
+    pub token_program: Pubkey, // Support for Token-2022
+}
+
+#[derive(Debug, Clone)]
 pub struct MintPoolData {
     pub mint: Pubkey,
     pub token_program: Pubkey, // Support for both Token and Token 2022
@@ -137,6 +148,7 @@ pub struct MintPoolData {
     pub solfi_pools: Vec<SolfiPool>,
     pub meteora_damm_v2_pools: Vec<MeteoraDAmmV2Pool>,
     pub vertigo_pools: Vec<VertigoPool>,
+    pub heaven_pools: Vec<HeavenPool>,
 }
 
 impl MintPoolData {
@@ -160,6 +172,7 @@ impl MintPoolData {
             solfi_pools: Vec::new(),
             meteora_damm_v2_pools: Vec::new(),
             vertigo_pools: Vec::new(),
+            heaven_pools: Vec::new(),
         })
     }
 
@@ -430,6 +443,28 @@ impl MintPoolData {
             token_sol_vault: Pubkey::from_str(token_sol_vault)?,
             token_mint: Pubkey::from_str(token_mint)?,
             base_mint: Pubkey::from_str(base_mint)?,
+        });
+        Ok(())
+    }
+
+    pub fn add_heaven_pool(
+        &mut self,
+        pool: &str,
+        protocol_config: &str,
+        token_x_vault: &str,
+        token_base_vault: &str,
+        token_mint: &str,
+        base_mint: &str,
+        token_program: &str,
+    ) -> anyhow::Result<()> {
+        self.heaven_pools.push(HeavenPool {
+            pool: Pubkey::from_str(pool)?,
+            protocol_config: Pubkey::from_str(protocol_config)?,
+            token_x_vault: Pubkey::from_str(token_x_vault)?,
+            token_base_vault: Pubkey::from_str(token_base_vault)?,
+            token_mint: Pubkey::from_str(token_mint)?,
+            base_mint: Pubkey::from_str(base_mint)?,
+            token_program: Pubkey::from_str(token_program)?,
         });
         Ok(())
     }

@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::dex::raydium::{raydium_authority, raydium_cp_authority};
+use crate::dex::heaven::constants::{heaven_program_id, heaven_protocol_account_1, heaven_protocol_account_2};
 use crate::dex::solfi::constants::solfi_program_id;
 use crate::dex::vertigo::constants::vertigo_program_id;
 use crate::pools::MintPoolData;
@@ -327,6 +328,11 @@ fn create_swap_instruction(
         );
         accounts.push(AccountMeta::new(global_volume_accumulator, false));
         accounts.push(AccountMeta::new(user_volume_accumulator, false));
+
+        let pump_fee_program_id = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ").unwrap();
+        let fee_config = Pubkey::from_str("5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx").unwrap();
+        accounts.push(AccountMeta::new_readonly(fee_config, false));
+        accounts.push(AccountMeta::new_readonly(pump_fee_program_id, false));
     }
 
     // Add DLMM pairs
@@ -425,6 +431,31 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(pool.pool_owner, false));
         accounts.push(AccountMeta::new(pool.token_x_vault, false));
         accounts.push(AccountMeta::new(pool.token_sol_vault, false));
+    }
+
+    // Add Heaven pools
+    for pool in &mint_pool_data.heaven_pools {
+        accounts.push(AccountMeta::new_readonly(heaven_program_id(), false));
+        accounts.push(AccountMeta::new_readonly(pool.base_mint, false)); // V9: Add base mint
+        accounts.push(AccountMeta::new(pool.pool, false));
+        accounts.push(AccountMeta::new(pool.protocol_config, false)); // Protocol config is writable for Heaven
+        
+        // Add fixed Heaven accounts
+        accounts.push(AccountMeta::new_readonly(
+            solana_program::sysvar::instructions::ID,
+            false,
+        )); // Instructions sysvar
+        accounts.push(AccountMeta::new_readonly(
+            heaven_protocol_account_1(),
+            false,
+        )); // Heaven protocol account 1
+        accounts.push(AccountMeta::new_readonly(
+            heaven_protocol_account_2(),
+            false,
+        )); // Heaven protocol account 2
+        
+        accounts.push(AccountMeta::new(pool.token_x_vault, false));
+        accounts.push(AccountMeta::new(pool.token_base_vault, false));
     }
 
     // Create instruction data

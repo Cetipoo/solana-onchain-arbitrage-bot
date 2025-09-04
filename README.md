@@ -38,6 +38,7 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - Orca Whirlpool
 - SolFi
 - Vertigo
+- Heaven
 
 ## Getting Started
 
@@ -97,6 +98,7 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
   - `raydium_clmm_pool_list`: List of Raydium CLMM pool addresses
   - `solfi_pool_list`: List of Solfi pool addresses
   - `vertigo_pool_list`: List of Vertigo pool addresses
+  - `heaven_pool_list`: List of Heaven pool addresses
   - `lookup_table_accounts`: List of lookup table accounts
   - `process_delay`: Process delay in milliseconds
 
