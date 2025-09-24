@@ -308,8 +308,8 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(pool.base_mint, false)); // V9: Add base mint
         accounts.push(AccountMeta::new_readonly(pump_global_config, false));
         accounts.push(AccountMeta::new_readonly(pump_authority, false));
-        accounts.push(AccountMeta::new(pump_fee_wallet(), false));
-        accounts.push(AccountMeta::new(pool.pool, false));
+        accounts.push(AccountMeta::new_readonly(pump_fee_wallet(), false));
+        accounts.push(AccountMeta::new_readonly(pool.pool, false));
         accounts.push(AccountMeta::new(pool.token_vault, false));
         accounts.push(AccountMeta::new(pool.sol_vault, false));
         accounts.push(AccountMeta::new(pool.fee_token_wallet, false));
