@@ -41,6 +41,6 @@ max_retries = 3
 # Private key (can be path or environment variable)
 private_key = ""
 
-[kamino_flashloan]
-# Enable Kamino flashloan
+[flashloan]
+# Enable flashloan
 enabled = true
