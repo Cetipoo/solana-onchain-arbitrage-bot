@@ -23,7 +23,7 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - Load configuration from a config file
 - Create ATA if not exist
 - Send transactions through multiple RPC endpoints (spam)
-- Kamino flashloan integration
+- Buildin flashloan integration
 - Parse all available pool types (Raydium, DLMM, Whirlpool, etc.)
 
 ## Supported Dexes
@@ -118,9 +118,9 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 
 - `private_key`: Private key (can be path or environment variable)
 
-### Kamino Flashloan Configuration
+### Flashloan Configuration
 
-- `enabled`: Enable Kamino flashloan
+- `enabled`: Enable flashloan
 
 ## License
 
