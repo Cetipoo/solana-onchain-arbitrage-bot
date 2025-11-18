@@ -326,7 +326,7 @@ fn create_swap_instruction(
             &[b"user_volume_accumulator", wallet.as_ref()],
             &pump_program_id,
         );
-        accounts.push(AccountMeta::new(global_volume_accumulator, false));
+        accounts.push(AccountMeta::new_readonly(global_volume_accumulator, false));
         accounts.push(AccountMeta::new(user_volume_accumulator, false));
 
         let pump_fee_program_id = Pubkey::from_str("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ").unwrap();
