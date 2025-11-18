@@ -164,6 +164,7 @@ fn create_swap_instruction(
     let sol_mint_pubkey = sol_mint();
     let wallet_sol_account = mint_pool_data.wallet_wsol_account;
     let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+    let usd1_mint = Pubkey::from_str("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB").unwrap();
 
     let mut accounts = vec![
         AccountMeta::new(wallet, true), // 0. Wallet (signer)
@@ -236,6 +237,7 @@ fn create_swap_instruction(
 
     // Check for mixed mode (USDC base)
     let mut has_usdc_base = false;
+    let mut has_usd1_base = false;
 
     // Check all pools to see if any have USDC as base mint
     for pool in &mint_pool_data.raydium_pools {
@@ -248,6 +250,23 @@ fn create_swap_instruction(
         for pool in &mint_pool_data.raydium_cp_pools {
             if pool.base_mint == usdc_mint {
                 has_usdc_base = true;
+                break;
+            }
+        }
+    }
+
+    if !has_usd1_base {
+        for pool in &mint_pool_data.raydium_pools {
+            if pool.base_mint == usd1_mint {
+                has_usd1_base = true;
+                break;
+            }
+        }
+    }
+    if !has_usd1_base {
+        for pool in &mint_pool_data.raydium_cp_pools {
+            if pool.base_mint == usd1_mint {
+                has_usd1_base = true;
                 break;
             }
         }
@@ -272,6 +291,24 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
         accounts.push(AccountMeta::new(raydium_sol_usdc_pool, false));
         accounts.push(AccountMeta::new(raydium_usdc_vault, false));
+        accounts.push(AccountMeta::new(raydium_sol_vault, false));
+    } else if has_usd1_base {
+        let wallet_usd1_account =
+            spl_associated_token_account::get_associated_token_address(&wallet, &usd1_mint);
+        let raydium_sol_usd1_pool =
+            Pubkey::from_str("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq").unwrap();
+        let raydium_usd1_vault =
+            Pubkey::from_str("GLx7TdT66CPKYJBn3Pzc9khrfXEx6mXtAiE8uskGBQJq").unwrap();
+        let raydium_sol_vault =
+            Pubkey::from_str("3U9HB8KNHXmAmiGMbDsj6fBxzM63dfX5JbaYs5oTHbtu").unwrap();
+
+        accounts.push(AccountMeta::new_readonly(usd1_mint, false));
+        accounts.push(AccountMeta::new(wallet_usd1_account, false));
+        accounts.push(AccountMeta::new_readonly(raydium_program_id(), false));
+        accounts.push(AccountMeta::new_readonly(raydium_authority(), false));
+        accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
+        accounts.push(AccountMeta::new(raydium_sol_usd1_pool, false));
+        accounts.push(AccountMeta::new(raydium_usd1_vault, false));
         accounts.push(AccountMeta::new(raydium_sol_vault, false));
     }
 
