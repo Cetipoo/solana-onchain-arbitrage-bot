@@ -420,6 +420,9 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new(pool.pool, false));
         accounts.push(AccountMeta::new(pool.token_x_vault, false));
         accounts.push(AccountMeta::new(pool.token_sol_vault, false));
+        let sysvar_instructions =
+            Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap();
+        accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
     }
 
     // Add Solfi pools
