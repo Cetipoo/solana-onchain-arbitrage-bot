@@ -214,15 +214,24 @@ fn create_swap_instruction(
     };
 
     if use_flashloan {
-        accounts.push(AccountMeta::new_readonly(
+        let vault_authorities = [
             Pubkey::from_str("5LFpzqgsxrSfhKwbaFiAEJ2kbc9QyimjKueswsyU4T3o").unwrap(),
-            false,
-        ));
-        let token_pda = derive_vault_token_account(
-            &Pubkey::from_str("MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz").unwrap(),
-            &flashloan_base_mint,
-        );
-        accounts.push(AccountMeta::new(token_pda.0, false));
+            Pubkey::from_str("4B2yxi8n7jr8w3K7cssokLNJZ6k2NjiwKwLdQ8L9dbAA").unwrap(),
+        ];
+        let vault_index = rand::random::<usize>() % vault_authorities.len();
+        let vault_authority = vault_authorities[vault_index];
+        accounts.push(AccountMeta::new_readonly(vault_authority, false));
+
+        let vault_token_account = if vault_index == 0 {
+            let token_pda = derive_vault_token_account(&executor_program_id, &flashloan_base_mint);
+            token_pda.0
+        } else {
+            spl_associated_token_account::get_associated_token_address(
+                &vault_authority,
+                &flashloan_base_mint,
+            )
+        };
+        accounts.push(AccountMeta::new(vault_token_account, false));
     }
 
     // Check for mixed mode (USDC base)
