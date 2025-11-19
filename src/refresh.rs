@@ -2,7 +2,7 @@ use crate::constants::sol_mint;
 use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
-use crate::dex::pump::{pump_fee_wallet, pump_program_id, PumpAmmInfo};
+use crate::dex::pump::{pump_fee_wallet, pump_mayhem_fee_wallet, pump_program_id, PumpAmmInfo};
 use crate::dex::raydium::{
     get_tick_array_pubkeys, raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
     PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
@@ -94,11 +94,26 @@ pub async fn initialize_pool_data(
                                 )
                             };
 
-                            let fee_token_wallet =
-                                spl_associated_token_account::get_associated_token_address(
-                                    &pump_fee_wallet(),
-                                    &amm_info.quote_mint,
-                                );
+                            let (fee_wallet, fee_token_wallet) =
+                                if amm_info.is_mayhem_mode {
+                                    let wallet = pump_mayhem_fee_wallet();
+                                    (
+                                        wallet,
+                                        spl_associated_token_account::get_associated_token_address(
+                                            &wallet,
+                                            &amm_info.quote_mint,
+                                        ),
+                                    )
+                                } else {
+                                    let wallet = pump_fee_wallet();
+                                    (
+                                        wallet,
+                                        spl_associated_token_account::get_associated_token_address(
+                                            &wallet,
+                                            &amm_info.quote_mint,
+                                        ),
+                                    )
+                                };
 
                             let coin_creator_vault_ata =
                                 spl_associated_token_account::get_associated_token_address(
@@ -117,17 +132,20 @@ pub async fn initialize_pool_data(
                                 pool_address,
                                 &token_vault.to_string(),
                                 &sol_vault.to_string(),
+                                &fee_wallet.to_string(),
                                 &fee_token_wallet.to_string(),
                                 &coin_creator_vault_ata.to_string(),
                                 &amm_info.coin_creator_vault_authority.to_string(),
                                 &token_mint.to_string(),
                                 &base_mint.to_string(),
+                                amm_info.is_mayhem_mode,
                             )?;
                             info!("Pump pool added: {}", pool_address);
                             info!("    Base mint: {}", amm_info.base_mint.to_string());
                             info!("    Quote mint: {}", amm_info.quote_mint.to_string());
                             info!("    Token vault: {}", token_vault.to_string());
                             info!("    Sol vault: {}", sol_vault.to_string());
+                            info!("    Fee wallet: {}", fee_wallet.to_string());
                             info!("    Fee token wallet: {}", fee_token_wallet.to_string());
                             info!(
                                 "    Coin creator vault ata: {}",
@@ -137,6 +155,7 @@ pub async fn initialize_pool_data(
                                 "    Coin creator vault authority: {}",
                                 amm_info.coin_creator_vault_authority.to_string()
                             );
+                            info!("    Mayhem mode: {}", amm_info.is_mayhem_mode);
                             info!("    Initialized Pump pool: {}\n", pump_pool_pubkey);
                         }
                         Err(e) => {
