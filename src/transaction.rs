@@ -176,44 +176,6 @@ fn create_swap_instruction(
         AccountMeta::new_readonly(associated_token_program_id, false), // 6. Associated Token program
     ];
 
-    // Determine the base mint for flashloan if needed
-    let flashloan_base_mint = if use_flashloan {
-        // For flashloan, we need a common base mint across all pools
-        // Check if all pools use SOL as base mint
-        let mut all_sol_base = true;
-        let mut all_usdc_base = true;
-
-        // Check all pool types to see their base mints
-        for pool in &mint_pool_data.raydium_pools {
-            if pool.base_mint != sol_mint_pubkey {
-                all_sol_base = false;
-            }
-            if pool.base_mint != usdc_mint {
-                all_usdc_base = false;
-            }
-        }
-        for pool in &mint_pool_data.raydium_cp_pools {
-            if pool.base_mint != sol_mint_pubkey {
-                all_sol_base = false;
-            }
-            if pool.base_mint != usdc_mint {
-                all_usdc_base = false;
-            }
-        }
-        // Add other pool type checks as needed...
-
-        if all_sol_base {
-            sol_mint_pubkey
-        } else if all_usdc_base {
-            usdc_mint
-        } else {
-            // Mixed base mints - default to SOL for now
-            sol_mint_pubkey
-        }
-    } else {
-        sol_mint_pubkey
-    };
-
     if use_flashloan {
         let vault_authorities = [
             Pubkey::from_str("5LFpzqgsxrSfhKwbaFiAEJ2kbc9QyimjKueswsyU4T3o").unwrap(),
@@ -224,12 +186,12 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(vault_authority, false));
 
         let vault_token_account = if vault_index == 0 {
-            let token_pda = derive_vault_token_account(&executor_program_id, &flashloan_base_mint);
+            let token_pda = derive_vault_token_account(&executor_program_id, &sol_mint_pubkey);
             token_pda.0
         } else {
             spl_associated_token_account::get_associated_token_address(
                 &vault_authority,
-                &flashloan_base_mint,
+                &sol_mint_pubkey,
             )
         };
         accounts.push(AccountMeta::new(vault_token_account, false));
