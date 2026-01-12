@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::dex::raydium::{raydium_authority, raydium_cp_authority};
 use crate::dex::heaven::constants::{heaven_program_id, heaven_protocol_account_1, heaven_protocol_account_2};
-use crate::dex::solfi::constants::solfi_program_id;
 use crate::dex::vertigo::constants::vertigo_program_id;
 use crate::pools::MintPoolData;
 use solana_client::rpc_client::RpcClient;
@@ -460,16 +459,6 @@ fn create_swap_instruction(
         let sysvar_instructions =
             Pubkey::from_str("Sysvar1nstructions1111111111111111111111111").unwrap();
         accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
-    }
-
-    // Add Solfi pools
-    for pool in &mint_pool_data.solfi_pools {
-        accounts.push(AccountMeta::new_readonly(solfi_program_id(), false));
-        accounts.push(AccountMeta::new_readonly(pool.base_mint, false)); // V9: Add base mint
-        accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
-        accounts.push(AccountMeta::new(pool.pool, false));
-        accounts.push(AccountMeta::new(pool.token_x_vault, false));
-        accounts.push(AccountMeta::new(pool.token_sol_vault, false));
     }
 
     // Add Vertigo pools

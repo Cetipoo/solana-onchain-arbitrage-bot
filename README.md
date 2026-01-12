@@ -36,7 +36,6 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - Meteora Dynamic AMM
 - Meteora DAMM V2
 - Orca Whirlpool
-- SolFi
 - Vertigo
 - Heaven
 
@@ -96,7 +95,6 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
   - `pump_pool_list`: List of Pump pool addresses
   - `whirlpool_pool_list`: List of Whirlpool pool addresses
   - `raydium_clmm_pool_list`: List of Raydium CLMM pool addresses
-  - `solfi_pool_list`: List of Solfi pool addresses
   - `vertigo_pool_list`: List of Vertigo pool addresses
   - `heaven_pool_list`: List of Heaven pool addresses
   - `lookup_table_accounts`: List of lookup table accounts

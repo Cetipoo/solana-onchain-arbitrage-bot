@@ -37,8 +37,6 @@ pub struct MintConfig {
 
     pub whirlpool_pool_list: Option<Vec<String>>,
 
-    pub solfi_pool_list: Option<Vec<String>>,
-
     pub vertigo_pool_list: Option<Vec<String>>,
 
     pub heaven_pool_list: Option<Vec<String>>,
