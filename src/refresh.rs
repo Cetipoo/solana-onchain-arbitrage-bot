@@ -7,8 +7,6 @@ use crate::dex::raydium::{
     get_tick_array_pubkeys, raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
     PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
 };
-use crate::dex::solfi::constants::solfi_program_id;
-use crate::dex::solfi::info::SolfiInfo;
 use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::vertigo::{derive_vault_address, vertigo_program_id, VertigoInfo};
 use crate::dex::whirlpool::{
@@ -32,7 +30,6 @@ pub async fn initialize_pool_data(
     whirlpool_pools: Option<&Vec<String>>,
     raydium_clmm_pools: Option<&Vec<String>>,
     meteora_damm_pools: Option<&Vec<String>>,
-    solfi_pools: Option<&Vec<String>>,
     meteora_damm_v2_pools: Option<&Vec<String>>,
     vertigo_pools: Option<&Vec<String>>,
     heaven_pools: Option<&Vec<String>>,
@@ -879,75 +876,6 @@ pub async fn initialize_pool_data(
                     error!(
                         "Error fetching Meteora DAMM V2 pool account {}: {:?}",
                         meteora_damm_v2_pool_pubkey, e
-                    );
-                    continue;
-                }
-            }
-        }
-    }
-
-    if let Some(pools) = solfi_pools {
-        for pool_address in pools {
-            let solfi_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&solfi_pool_pubkey) {
-                Ok(account) => {
-                    if account.owner != solfi_program_id() {
-                        error!(
-                            "Solfi pool {} is not owned by the Solfi program, skipping",
-                            pool_address
-                        );
-                        continue;
-                    }
-
-                    match SolfiInfo::load_checked(&account.data) {
-                        Ok(solfi_info) => {
-                            info!("Solfi pool added: {}", pool_address);
-                            info!("    Base mint: {}", solfi_info.base_mint.to_string());
-                            info!("    Quote mint: {}", solfi_info.quote_mint.to_string());
-                            info!("    Base vault: {}", solfi_info.base_vault.to_string());
-                            info!("    Quote vault: {}", solfi_info.quote_vault.to_string());
-
-                            let token_x_vault = if sol_mint() == solfi_info.base_mint {
-                                solfi_info.quote_vault
-                            } else {
-                                solfi_info.base_vault
-                            };
-
-                            let token_sol_vault = if sol_mint() == solfi_info.base_mint {
-                                solfi_info.base_vault
-                            } else {
-                                solfi_info.quote_vault
-                            };
-
-                            // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == solfi_info.base_mint {
-                                (solfi_info.base_mint, solfi_info.quote_mint)
-                            } else {
-                                (solfi_info.quote_mint, solfi_info.base_mint)
-                            };
-                            
-                            pool_data.add_solfi_pool(
-                                pool_address,
-                                &token_x_vault.to_string(),
-                                &token_sol_vault.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
-                        }
-                        Err(e) => {
-                            error!(
-                                "Error parsing Solfi pool data from pool {}: {:?}",
-                                pool_address, e
-                            );
-                            continue;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "Error fetching Solfi pool account {}: {:?}",
-                        solfi_pool_pubkey, e
                     );
                     continue;
                 }

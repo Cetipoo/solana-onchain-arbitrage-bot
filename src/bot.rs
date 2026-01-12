@@ -132,7 +132,6 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
             mint_config.whirlpool_pool_list.as_ref(),
             mint_config.raydium_clmm_pool_list.as_ref(),
             mint_config.meteora_damm_pool_list.as_ref(),
-            mint_config.solfi_pool_list.as_ref(),
             mint_config.meteora_damm_v2_pool_list.as_ref(),
             mint_config.vertigo_pool_list.as_ref(),
             mint_config.heaven_pool_list.as_ref(),
