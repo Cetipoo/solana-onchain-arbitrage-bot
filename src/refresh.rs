@@ -1,9 +1,13 @@
 use crate::config::MarketsConfig;
 use crate::constants::sol_mint;
+use crate::dex::byreal::{byreal_program_id, byreal_authority};
+use crate::dex::futarchy::{futarchy_program_id, FutarchyInfo};
 use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
+use crate::dex::humidifi::{humidifi_program_id, HumidifiInfo};
 use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
+use crate::dex::pancakeswap::{pancakeswap_program_id, pancakeswap_authority};
 use crate::dex::pump::{pump_fee_wallet, pump_mayhem_fee_wallet, pump_program_id, PumpAmmInfo};
 use crate::dex::raydium::{
     get_tick_array_pubkeys, raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
@@ -34,6 +38,10 @@ pub enum MarketPoolKind {
     Whirlpool,
     Vertigo,
     Heaven,
+    Futarchy,
+    Humidifi,
+    PancakeSwap,
+    Byreal,
 }
 
 /// Internal structure for grouping pools by mint during detection
@@ -49,6 +57,10 @@ struct MintPoolsBuilder {
     whirlpool_pools: Vec<Pubkey>,
     vertigo_pools: Vec<Pubkey>,
     heaven_pools: Vec<Pubkey>,
+    futarchy_pools: Vec<Pubkey>,
+    humidifi_pools: Vec<Pubkey>,
+    pancakeswap_pools: Vec<Pubkey>,
+    byreal_pools: Vec<Pubkey>,
 }
 
 /// Detect the pool kind based on the account owner (program ID)
@@ -73,6 +85,14 @@ pub fn detect_pool_kind(owner: &Pubkey) -> Option<MarketPoolKind> {
         Some(MarketPoolKind::Vertigo)
     } else if *owner == heaven_program_id() {
         Some(MarketPoolKind::Heaven)
+    } else if *owner == futarchy_program_id() {
+        Some(MarketPoolKind::Futarchy)
+    } else if *owner == humidifi_program_id() {
+        Some(MarketPoolKind::Humidifi)
+    } else if *owner == pancakeswap_program_id() {
+        Some(MarketPoolKind::PancakeSwap)
+    } else if *owner == byreal_program_id() {
+        Some(MarketPoolKind::Byreal)
     } else {
         None
     }
@@ -200,6 +220,40 @@ fn extract_token_mint(
             };
             Ok(Some(token_mint))
         }
+        MarketPoolKind::Futarchy => {
+            let info = FutarchyInfo::load_checked(data)?;
+            let token_mint = if info.base_mint == sol {
+                info.quote_mint
+            } else if info.quote_mint == sol {
+                info.base_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::Humidifi => {
+            let info = HumidifiInfo::load_checked(data)?;
+            let token_mint = if info.base_mint == sol {
+                info.quote_mint
+            } else if info.quote_mint == sol {
+                info.base_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::PancakeSwap | MarketPoolKind::Byreal => {
+            // PancakeSwap and Byreal share the same CLMM layout as Raydium
+            let info = PoolState::load_checked(data)?;
+            let token_mint = if info.token_mint_0 == sol {
+                info.token_mint_1
+            } else if info.token_mint_1 == sol {
+                info.token_mint_0
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
     }
 }
 
@@ -297,6 +351,10 @@ pub async fn initialize_pools_from_markets(
                 MarketPoolKind::Whirlpool => builder.whirlpool_pools.push(pool_pubkey),
                 MarketPoolKind::Vertigo => builder.vertigo_pools.push(pool_pubkey),
                 MarketPoolKind::Heaven => builder.heaven_pools.push(pool_pubkey),
+                MarketPoolKind::Futarchy => builder.futarchy_pools.push(pool_pubkey),
+                MarketPoolKind::Humidifi => builder.humidifi_pools.push(pool_pubkey),
+                MarketPoolKind::PancakeSwap => builder.pancakeswap_pools.push(pool_pubkey),
+                MarketPoolKind::Byreal => builder.byreal_pools.push(pool_pubkey),
             }
         }
     }
@@ -322,6 +380,10 @@ pub async fn initialize_pools_from_markets(
             if builder.damm_v2_pools.is_empty() { None } else { Some(&builder.damm_v2_pools) },
             if builder.vertigo_pools.is_empty() { None } else { Some(&builder.vertigo_pools) },
             if builder.heaven_pools.is_empty() { None } else { Some(&builder.heaven_pools) },
+            if builder.futarchy_pools.is_empty() { None } else { Some(&builder.futarchy_pools) },
+            if builder.humidifi_pools.is_empty() { None } else { Some(&builder.humidifi_pools) },
+            if builder.pancakeswap_pools.is_empty() { None } else { Some(&builder.pancakeswap_pools) },
+            if builder.byreal_pools.is_empty() { None } else { Some(&builder.byreal_pools) },
             rpc_client.clone(),
         )
         .await?;
@@ -345,6 +407,10 @@ pub async fn initialize_pool_data(
     meteora_damm_v2_pools: Option<&Vec<Pubkey>>,
     vertigo_pools: Option<&Vec<Pubkey>>,
     heaven_pools: Option<&Vec<Pubkey>>,
+    futarchy_pools: Option<&Vec<Pubkey>>,
+    humidifi_pools: Option<&Vec<Pubkey>>,
+    pancakeswap_pools: Option<&Vec<Pubkey>>,
+    byreal_pools: Option<&Vec<Pubkey>>,
     rpc_client: Arc<RpcClient>,
 ) -> anyhow::Result<MintPoolData> {
     info!("Initializing pool data for mint: {}", mint);
@@ -1317,6 +1383,322 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Heaven pool account {}: {:?}",
+                        pool_pubkey, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    if let Some(pools) = futarchy_pools {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
+                Ok(account) => {
+                    if account.owner != futarchy_program_id() {
+                        error!(
+                            "Futarchy pool {} is not owned by the Futarchy program, skipping",
+                            pool_pubkey
+                        );
+                        continue;
+                    }
+
+                    match FutarchyInfo::load_checked(&account.data) {
+                        Ok(futarchy_info) => {
+                            info!("Futarchy pool added: {}", pool_pubkey);
+                            info!("    Base mint: {}", futarchy_info.base_mint);
+                            info!("    Quote mint: {}", futarchy_info.quote_mint);
+                            info!("    Base vault: {}", futarchy_info.base_vault);
+                            info!("    Quote vault: {}", futarchy_info.quote_vault);
+
+                            let sol = sol_mint();
+                            let (token_x_vault, token_sol_vault) = if sol == futarchy_info.base_mint {
+                                (futarchy_info.quote_vault, futarchy_info.base_vault)
+                            } else {
+                                (futarchy_info.base_vault, futarchy_info.quote_vault)
+                            };
+
+                            let (token_mint, base_mint) = if mint == futarchy_info.base_mint {
+                                (futarchy_info.base_mint, futarchy_info.quote_mint)
+                            } else {
+                                (futarchy_info.quote_mint, futarchy_info.base_mint)
+                            };
+
+                            pool_data.add_futarchy_pool(
+                                pool_pubkey,
+                                token_x_vault,
+                                token_sol_vault,
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("    Initialized Futarchy pool: {}\n", pool_pubkey);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Error parsing Futarchy pool data from pool {}: {:?}",
+                                pool_pubkey, e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching Futarchy pool account {}: {:?}",
+                        pool_pubkey, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    if let Some(pools) = humidifi_pools {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
+                Ok(account) => {
+                    if account.owner != humidifi_program_id() {
+                        error!(
+                            "Humidifi pool {} is not owned by the Humidifi program, skipping",
+                            pool_pubkey
+                        );
+                        continue;
+                    }
+
+                    match HumidifiInfo::load_checked(&account.data) {
+                        Ok(humidifi_info) => {
+                            info!("Humidifi pool added: {}", pool_pubkey);
+                            info!("    Base mint: {}", humidifi_info.base_mint);
+                            info!("    Quote mint: {}", humidifi_info.quote_mint);
+                            info!("    Base vault: {}", humidifi_info.base_vault);
+                            info!("    Quote vault: {}", humidifi_info.quote_vault);
+
+                            let sol = sol_mint();
+                            let (token_x_vault, token_sol_vault) = if sol == humidifi_info.base_mint {
+                                (humidifi_info.quote_vault, humidifi_info.base_vault)
+                            } else {
+                                (humidifi_info.base_vault, humidifi_info.quote_vault)
+                            };
+
+                            let (token_mint, base_mint) = if mint == humidifi_info.base_mint {
+                                (humidifi_info.base_mint, humidifi_info.quote_mint)
+                            } else {
+                                (humidifi_info.quote_mint, humidifi_info.base_mint)
+                            };
+
+                            pool_data.add_humidifi_pool(
+                                pool_pubkey,
+                                token_x_vault,
+                                token_sol_vault,
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("    Initialized Humidifi pool: {}\n", pool_pubkey);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Error parsing Humidifi pool data from pool {}: {:?}",
+                                pool_pubkey, e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching Humidifi pool account {}: {:?}",
+                        pool_pubkey, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    if let Some(pools) = pancakeswap_pools {
+        for &pool_pubkey in pools {
+            let pancakeswap_prog_id = pancakeswap_program_id();
+
+            match rpc_client.get_account(&pool_pubkey) {
+                Ok(account) => {
+                    if account.owner != pancakeswap_prog_id {
+                        error!(
+                            "PancakeSwap pool {} is not owned by the PancakeSwap program, skipping",
+                            pool_pubkey
+                        );
+                        continue;
+                    }
+
+                    match PoolState::load_checked(&account.data) {
+                        Ok(pool_state) => {
+                            if pool_state.token_mint_0 != pool_data.mint
+                                && pool_state.token_mint_1 != pool_data.mint
+                            {
+                                error!(
+                                    "Mint {} is not present in PancakeSwap pool {}, skipping",
+                                    pool_data.mint, pool_pubkey
+                                );
+                                continue;
+                            }
+
+                            let sol = sol_mint();
+                            let (token_vault, sol_vault) = if sol == pool_state.token_mint_0 {
+                                (pool_state.token_vault_1, pool_state.token_vault_0)
+                            } else if sol == pool_state.token_mint_1 {
+                                (pool_state.token_vault_0, pool_state.token_vault_1)
+                            } else {
+                                error!("SOL is not present in PancakeSwap pool {}", pool_pubkey);
+                                continue;
+                            };
+
+                            let tick_arrays = get_tick_array_pubkeys(
+                                &pool_pubkey,
+                                pool_state.tick_current,
+                                pool_state.tick_spacing,
+                                &[-1, 0, 1],
+                                &pancakeswap_prog_id,
+                            )?;
+
+                            let (token_mint, base_mint) = if mint == pool_state.token_mint_0 {
+                                (pool_state.token_mint_0, pool_state.token_mint_1)
+                            } else {
+                                (pool_state.token_mint_1, pool_state.token_mint_0)
+                            };
+
+                            pool_data.add_pancakeswap_pool(
+                                pool_pubkey,
+                                pool_state.amm_config,
+                                pool_state.observation_key,
+                                token_vault,
+                                sol_vault,
+                                tick_arrays.clone(),
+                                None, // memo_program
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("PancakeSwap pool added: {}", pool_pubkey);
+                            info!("    Token mint 0: {}", pool_state.token_mint_0);
+                            info!("    Token mint 1: {}", pool_state.token_mint_1);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM config: {}", pool_state.amm_config);
+                            info!("    Observation key: {}", pool_state.observation_key);
+
+                            for (i, array) in tick_arrays.iter().enumerate() {
+                                info!("    Tick Array {}: {}", i, array);
+                            }
+                            info!("");
+                        }
+                        Err(e) => {
+                            error!(
+                                "Error parsing PancakeSwap pool data from pool {}: {:?}",
+                                pool_pubkey, e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching PancakeSwap pool account {}: {:?}",
+                        pool_pubkey, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+
+    if let Some(pools) = byreal_pools {
+        for &pool_pubkey in pools {
+            let byreal_prog_id = byreal_program_id();
+
+            match rpc_client.get_account(&pool_pubkey) {
+                Ok(account) => {
+                    if account.owner != byreal_prog_id {
+                        error!(
+                            "Byreal pool {} is not owned by the Byreal program, skipping",
+                            pool_pubkey
+                        );
+                        continue;
+                    }
+
+                    match PoolState::load_checked(&account.data) {
+                        Ok(pool_state) => {
+                            if pool_state.token_mint_0 != pool_data.mint
+                                && pool_state.token_mint_1 != pool_data.mint
+                            {
+                                error!(
+                                    "Mint {} is not present in Byreal pool {}, skipping",
+                                    pool_data.mint, pool_pubkey
+                                );
+                                continue;
+                            }
+
+                            let sol = sol_mint();
+                            let (token_vault, sol_vault) = if sol == pool_state.token_mint_0 {
+                                (pool_state.token_vault_1, pool_state.token_vault_0)
+                            } else if sol == pool_state.token_mint_1 {
+                                (pool_state.token_vault_0, pool_state.token_vault_1)
+                            } else {
+                                error!("SOL is not present in Byreal pool {}", pool_pubkey);
+                                continue;
+                            };
+
+                            let tick_arrays = get_tick_array_pubkeys(
+                                &pool_pubkey,
+                                pool_state.tick_current,
+                                pool_state.tick_spacing,
+                                &[-1, 0, 1],
+                                &byreal_prog_id,
+                            )?;
+
+                            let (token_mint, base_mint) = if mint == pool_state.token_mint_0 {
+                                (pool_state.token_mint_0, pool_state.token_mint_1)
+                            } else {
+                                (pool_state.token_mint_1, pool_state.token_mint_0)
+                            };
+
+                            pool_data.add_byreal_pool(
+                                pool_pubkey,
+                                pool_state.amm_config,
+                                pool_state.observation_key,
+                                token_vault,
+                                sol_vault,
+                                tick_arrays.clone(),
+                                None, // memo_program
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("Byreal pool added: {}", pool_pubkey);
+                            info!("    Token mint 0: {}", pool_state.token_mint_0);
+                            info!("    Token mint 1: {}", pool_state.token_mint_1);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM config: {}", pool_state.amm_config);
+                            info!("    Observation key: {}", pool_state.observation_key);
+
+                            for (i, array) in tick_arrays.iter().enumerate() {
+                                info!("    Tick Array {}: {}", i, array);
+                            }
+                            info!("");
+                        }
+                        Err(e) => {
+                            error!(
+                                "Error parsing Byreal pool data from pool {}: {:?}",
+                                pool_pubkey, e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching Byreal pool account {}: {:?}",
                         pool_pubkey, e
                     );
                     continue;

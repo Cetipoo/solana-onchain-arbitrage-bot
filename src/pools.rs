@@ -1,7 +1,13 @@
 use crate::{
     constants::sol_mint,
-    dex::raydium::{clmm_info::POOL_TICK_ARRAY_BITMAP_SEED, raydium_clmm_program_id},
+    dex::{
+        byreal::byreal_program_id,
+        pancakeswap::pancakeswap_program_id,
+        raydium::{clmm_info::POOL_TICK_ARRAY_BITMAP_SEED, raydium_clmm_program_id},
+    },
 };
+
+const POOL_TICK_ARRAY_BITMAP_SEED_CLMM: &str = "pool_tick_array_bitmap_extension";
 use solana_program::instruction::AccountMeta;
 use solana_program::pubkey::Pubkey;
 
@@ -125,6 +131,52 @@ pub struct HeavenPool {
 }
 
 #[derive(Debug, Clone)]
+pub struct FutarchyPool {
+    pub dao: Pubkey,
+    pub token_x_vault: Pubkey,
+    pub token_sol_vault: Pubkey,
+    pub token_mint: Pubkey,
+    pub base_mint: Pubkey,
+}
+
+#[derive(Debug, Clone)]
+pub struct HumidifiPool {
+    pub pool: Pubkey,
+    pub token_x_vault: Pubkey,
+    pub token_sol_vault: Pubkey,
+    pub token_mint: Pubkey,
+    pub base_mint: Pubkey,
+}
+
+#[derive(Debug, Clone)]
+pub struct PancakeswapPool {
+    pub pool: Pubkey,
+    pub amm_config: Pubkey,
+    pub observation_state: Pubkey,
+    pub bitmap_extension: Pubkey,
+    pub x_vault: Pubkey,
+    pub y_vault: Pubkey,
+    pub tick_arrays: Vec<Pubkey>,
+    pub memo_program: Option<Pubkey>,
+    pub token_mint: Pubkey,
+    pub base_mint: Pubkey,
+}
+
+#[derive(Debug, Clone)]
+pub struct ByrealPool {
+    pub pool: Pubkey,
+    pub amm_config: Pubkey,
+    pub observation_state: Pubkey,
+    pub bitmap_extension: Pubkey,
+    pub x_vault: Pubkey,
+    pub y_vault: Pubkey,
+    pub tick_arrays: Vec<Pubkey>,
+    pub memo_program: Option<Pubkey>,
+    pub token_mint: Pubkey,
+    pub base_mint: Pubkey,
+}
+
+#[derive(Debug, Clone)]
 pub struct MintPoolData {
     pub mint: Pubkey,
     pub token_program: Pubkey, // Support for both Token and Token 2022
@@ -140,6 +192,10 @@ pub struct MintPoolData {
     pub meteora_damm_v2_pools: Vec<MeteoraDAmmV2Pool>,
     pub vertigo_pools: Vec<VertigoPool>,
     pub heaven_pools: Vec<HeavenPool>,
+    pub futarchy_pools: Vec<FutarchyPool>,
+    pub humidifi_pools: Vec<HumidifiPool>,
+    pub pancakeswap_pools: Vec<PancakeswapPool>,
+    pub byreal_pools: Vec<ByrealPool>,
 }
 
 impl MintPoolData {
@@ -162,6 +218,10 @@ impl MintPoolData {
             meteora_damm_v2_pools: Vec::new(),
             vertigo_pools: Vec::new(),
             heaven_pools: Vec::new(),
+            futarchy_pools: Vec::new(),
+            humidifi_pools: Vec::new(),
+            pancakeswap_pools: Vec::new(),
+            byreal_pools: Vec::new(),
         }
     }
 
@@ -398,6 +458,104 @@ impl MintPoolData {
             token_mint,
             base_mint,
             token_program,
+        });
+    }
+
+    pub fn add_futarchy_pool(
+        &mut self,
+        dao: Pubkey,
+        token_x_vault: Pubkey,
+        token_sol_vault: Pubkey,
+        token_mint: Pubkey,
+        base_mint: Pubkey,
+    ) {
+        self.futarchy_pools.push(FutarchyPool {
+            dao,
+            token_x_vault,
+            token_sol_vault,
+            token_mint,
+            base_mint,
+        });
+    }
+
+    pub fn add_humidifi_pool(
+        &mut self,
+        pool: Pubkey,
+        token_x_vault: Pubkey,
+        token_sol_vault: Pubkey,
+        token_mint: Pubkey,
+        base_mint: Pubkey,
+    ) {
+        self.humidifi_pools.push(HumidifiPool {
+            pool,
+            token_x_vault,
+            token_sol_vault,
+            token_mint,
+            base_mint,
+        });
+    }
+
+    pub fn add_pancakeswap_pool(
+        &mut self,
+        pool: Pubkey,
+        amm_config: Pubkey,
+        observation_state: Pubkey,
+        x_vault: Pubkey,
+        y_vault: Pubkey,
+        tick_arrays: Vec<Pubkey>,
+        memo_program: Option<Pubkey>,
+        token_mint: Pubkey,
+        base_mint: Pubkey,
+    ) {
+        let bitmap_extension = Pubkey::find_program_address(
+            &[POOL_TICK_ARRAY_BITMAP_SEED_CLMM.as_bytes(), pool.as_ref()],
+            &pancakeswap_program_id(),
+        )
+        .0;
+
+        self.pancakeswap_pools.push(PancakeswapPool {
+            pool,
+            amm_config,
+            observation_state,
+            bitmap_extension,
+            x_vault,
+            y_vault,
+            tick_arrays,
+            memo_program,
+            token_mint,
+            base_mint,
+        });
+    }
+
+    pub fn add_byreal_pool(
+        &mut self,
+        pool: Pubkey,
+        amm_config: Pubkey,
+        observation_state: Pubkey,
+        x_vault: Pubkey,
+        y_vault: Pubkey,
+        tick_arrays: Vec<Pubkey>,
+        memo_program: Option<Pubkey>,
+        token_mint: Pubkey,
+        base_mint: Pubkey,
+    ) {
+        let bitmap_extension = Pubkey::find_program_address(
+            &[POOL_TICK_ARRAY_BITMAP_SEED_CLMM.as_bytes(), pool.as_ref()],
+            &byreal_program_id(),
+        )
+        .0;
+
+        self.byreal_pools.push(ByrealPool {
+            pool,
+            amm_config,
+            observation_state,
+            bitmap_extension,
+            x_vault,
+            y_vault,
+            tick_arrays,
+            memo_program,
+            token_mint,
+            base_mint,
         });
     }
 }
