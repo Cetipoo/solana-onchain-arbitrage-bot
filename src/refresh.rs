@@ -18,7 +18,6 @@ use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use spl_associated_token_account;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
@@ -40,16 +39,16 @@ pub enum MarketPoolKind {
 /// Internal structure for grouping pools by mint during detection
 #[derive(Default)]
 struct MintPoolsBuilder {
-    pump_pools: Vec<String>,
-    raydium_pools: Vec<String>,
-    raydium_cp_pools: Vec<String>,
-    raydium_clmm_pools: Vec<String>,
-    dlmm_pools: Vec<String>,
-    damm_pools: Vec<String>,
-    damm_v2_pools: Vec<String>,
-    whirlpool_pools: Vec<String>,
-    vertigo_pools: Vec<String>,
-    heaven_pools: Vec<String>,
+    pump_pools: Vec<Pubkey>,
+    raydium_pools: Vec<Pubkey>,
+    raydium_cp_pools: Vec<Pubkey>,
+    raydium_clmm_pools: Vec<Pubkey>,
+    dlmm_pools: Vec<Pubkey>,
+    damm_pools: Vec<Pubkey>,
+    damm_v2_pools: Vec<Pubkey>,
+    whirlpool_pools: Vec<Pubkey>,
+    vertigo_pools: Vec<Pubkey>,
+    heaven_pools: Vec<Pubkey>,
 }
 
 /// Detect the pool kind based on the account owner (program ID)
@@ -191,7 +190,7 @@ fn extract_token_mint(
             let info = HeavenPoolState::parse(data).ok_or_else(|| {
                 anyhow::anyhow!("Failed to parse Heaven pool")
             })?;
-            let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+            let usdc_mint: Pubkey = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".parse().unwrap();
             let token_mint = if info.mint_a == sol || info.mint_a == usdc_mint {
                 info.mint_b
             } else if info.mint_b == sol || info.mint_b == usdc_mint {
@@ -213,7 +212,7 @@ fn extract_token_mint(
 /// 5. Initializes MintPoolData for each mint
 pub async fn initialize_pools_from_markets(
     markets_config: &MarketsConfig,
-    wallet_account: &str,
+    wallet_account: &Pubkey,
     rpc_client: Arc<RpcClient>,
 ) -> anyhow::Result<HashMap<Pubkey, MintPoolData>> {
     info!("Initializing pools from {} markets", markets_config.markets.len());
@@ -223,7 +222,7 @@ pub async fn initialize_pools_from_markets(
         .markets
         .iter()
         .filter_map(|s| {
-            match Pubkey::from_str(s) {
+            match s.parse::<Pubkey>() {
                 Ok(pk) => Some(pk),
                 Err(e) => {
                     error!("Invalid market address {}: {}", s, e);
@@ -286,19 +285,18 @@ pub async fn initialize_pools_from_markets(
 
             // Group by mint
             let builder = mint_pools.entry(token_mint).or_default();
-            let pool_str = pool_pubkey.to_string();
 
             match kind {
-                MarketPoolKind::Pump => builder.pump_pools.push(pool_str),
-                MarketPoolKind::RaydiumV4 => builder.raydium_pools.push(pool_str),
-                MarketPoolKind::RaydiumCp => builder.raydium_cp_pools.push(pool_str),
-                MarketPoolKind::RaydiumClmm => builder.raydium_clmm_pools.push(pool_str),
-                MarketPoolKind::MeteoraDlmm => builder.dlmm_pools.push(pool_str),
-                MarketPoolKind::MeteoraDamm => builder.damm_pools.push(pool_str),
-                MarketPoolKind::MeteoraDammV2 => builder.damm_v2_pools.push(pool_str),
-                MarketPoolKind::Whirlpool => builder.whirlpool_pools.push(pool_str),
-                MarketPoolKind::Vertigo => builder.vertigo_pools.push(pool_str),
-                MarketPoolKind::Heaven => builder.heaven_pools.push(pool_str),
+                MarketPoolKind::Pump => builder.pump_pools.push(pool_pubkey),
+                MarketPoolKind::RaydiumV4 => builder.raydium_pools.push(pool_pubkey),
+                MarketPoolKind::RaydiumCp => builder.raydium_cp_pools.push(pool_pubkey),
+                MarketPoolKind::RaydiumClmm => builder.raydium_clmm_pools.push(pool_pubkey),
+                MarketPoolKind::MeteoraDlmm => builder.dlmm_pools.push(pool_pubkey),
+                MarketPoolKind::MeteoraDamm => builder.damm_pools.push(pool_pubkey),
+                MarketPoolKind::MeteoraDammV2 => builder.damm_v2_pools.push(pool_pubkey),
+                MarketPoolKind::Whirlpool => builder.whirlpool_pools.push(pool_pubkey),
+                MarketPoolKind::Vertigo => builder.vertigo_pools.push(pool_pubkey),
+                MarketPoolKind::Heaven => builder.heaven_pools.push(pool_pubkey),
             }
         }
     }
@@ -312,7 +310,7 @@ pub async fn initialize_pools_from_markets(
         info!("Initializing pools for mint: {}", mint);
 
         let pool_data = initialize_pool_data(
-            &mint.to_string(),
+            mint,
             wallet_account,
             if builder.raydium_pools.is_empty() { None } else { Some(&builder.raydium_pools) },
             if builder.raydium_cp_pools.is_empty() { None } else { Some(&builder.raydium_cp_pools) },
@@ -335,29 +333,27 @@ pub async fn initialize_pools_from_markets(
 }
 
 pub async fn initialize_pool_data(
-    mint: &str,
-    wallet_account: &str,
-    raydium_pools: Option<&Vec<String>>,
-    raydium_cp_pools: Option<&Vec<String>>,
-    pump_pools: Option<&Vec<String>>,
-    dlmm_pools: Option<&Vec<String>>,
-    whirlpool_pools: Option<&Vec<String>>,
-    raydium_clmm_pools: Option<&Vec<String>>,
-    meteora_damm_pools: Option<&Vec<String>>,
-    meteora_damm_v2_pools: Option<&Vec<String>>,
-    vertigo_pools: Option<&Vec<String>>,
-    heaven_pools: Option<&Vec<String>>,
+    mint: Pubkey,
+    wallet_account: &Pubkey,
+    raydium_pools: Option<&Vec<Pubkey>>,
+    raydium_cp_pools: Option<&Vec<Pubkey>>,
+    pump_pools: Option<&Vec<Pubkey>>,
+    dlmm_pools: Option<&Vec<Pubkey>>,
+    whirlpool_pools: Option<&Vec<Pubkey>>,
+    raydium_clmm_pools: Option<&Vec<Pubkey>>,
+    meteora_damm_pools: Option<&Vec<Pubkey>>,
+    meteora_damm_v2_pools: Option<&Vec<Pubkey>>,
+    vertigo_pools: Option<&Vec<Pubkey>>,
+    heaven_pools: Option<&Vec<Pubkey>>,
     rpc_client: Arc<RpcClient>,
 ) -> anyhow::Result<MintPoolData> {
     info!("Initializing pool data for mint: {}", mint);
 
     // Fetch mint account to determine token program
-    let mint_pubkey = Pubkey::from_str(mint)?;
-    let mint_account = rpc_client.get_account(&mint_pubkey)?;
+    let mint_account = rpc_client.get_account(&mint)?;
 
     // Determine token program based on mint account owner
-    let token_2022_program_id =
-        Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+    let token_2022_program_id: Pubkey = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".parse().unwrap();
     let token_program = if mint_account.owner == spl_token::ID {
         spl_token::ID
     } else if mint_account.owner == token_2022_program_id {
@@ -367,14 +363,12 @@ pub async fn initialize_pool_data(
     };
 
     info!("Detected token program: {}", token_program);
-    let mut pool_data = MintPoolData::new(mint, wallet_account, token_program)?;
+    let mut pool_data = MintPoolData::new(mint, wallet_account, token_program);
     info!("Pool data initialized for mint: {}", mint);
 
     if let Some(pools) = pump_pools {
-        for pool_address in pools {
-            let pump_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&pump_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != pump_program_id() {
                         error!(
@@ -433,46 +427,46 @@ pub async fn initialize_pool_data(
                                 );
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == amm_info.base_mint {
+                            let (token_mint, base_mint) = if mint == amm_info.base_mint {
                                 (amm_info.base_mint, amm_info.quote_mint)
                             } else {
                                 (amm_info.quote_mint, amm_info.base_mint)
                             };
-                            
+
                             pool_data.add_pump_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &fee_wallet.to_string(),
-                                &fee_token_wallet.to_string(),
-                                &coin_creator_vault_ata.to_string(),
-                                &amm_info.coin_creator_vault_authority.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
+                                pool_pubkey,
+                                token_vault,
+                                sol_vault,
+                                fee_wallet,
+                                fee_token_wallet,
+                                coin_creator_vault_ata,
+                                amm_info.coin_creator_vault_authority,
+                                token_mint,
+                                base_mint,
                                 amm_info.is_mayhem_mode,
-                            )?;
-                            info!("Pump pool added: {}", pool_address);
-                            info!("    Base mint: {}", amm_info.base_mint.to_string());
-                            info!("    Quote mint: {}", amm_info.quote_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Fee wallet: {}", fee_wallet.to_string());
-                            info!("    Fee token wallet: {}", fee_token_wallet.to_string());
+                            );
+                            info!("Pump pool added: {}", pool_pubkey);
+                            info!("    Base mint: {}", amm_info.base_mint);
+                            info!("    Quote mint: {}", amm_info.quote_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Fee wallet: {}", fee_wallet);
+                            info!("    Fee token wallet: {}", fee_token_wallet);
                             info!(
                                 "    Coin creator vault ata: {}",
-                                coin_creator_vault_ata.to_string()
+                                coin_creator_vault_ata
                             );
                             info!(
                                 "    Coin creator vault authority: {}",
-                                amm_info.coin_creator_vault_authority.to_string()
+                                amm_info.coin_creator_vault_authority
                             );
                             info!("    Mayhem mode: {}", amm_info.is_mayhem_mode);
-                            info!("    Initialized Pump pool: {}\n", pump_pool_pubkey);
+                            info!("    Initialized Pump pool: {}\n", pool_pubkey);
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing AmmInfo from Pump pool {}: {:?}",
-                                pump_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(e);
                         }
@@ -481,7 +475,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Pump pool account {}: {:?}",
-                        pump_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching Pump pool account"));
                 }
@@ -490,10 +484,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = raydium_pools {
-        for pool_address in pools {
-            let raydium_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&raydium_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != raydium_program_id() {
                         error!(
@@ -512,22 +504,22 @@ pub async fn initialize_pool_data(
                             {
                                 error!(
                                     "Mint {} is not present in Raydium pool {}, skipping",
-                                    pool_data.mint, raydium_pool_pubkey
+                                    pool_data.mint, pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "Invalid Raydium pool: {}",
-                                    raydium_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
                             if amm_info.coin_mint != sol_mint() && amm_info.pc_mint != sol_mint() {
                                 error!(
                                     "SOL is not present in Raydium pool {}",
-                                    raydium_pool_pubkey
+                                    pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "SOL is not present in Raydium pool: {}",
-                                    raydium_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
@@ -538,30 +530,30 @@ pub async fn initialize_pool_data(
                             };
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == amm_info.coin_mint {
+                            let (token_mint, base_mint) = if mint == amm_info.coin_mint {
                                 (amm_info.coin_mint, amm_info.pc_mint)
                             } else {
                                 (amm_info.pc_mint, amm_info.coin_mint)
                             };
-                            
+
                             pool_data.add_raydium_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
-                            info!("Raydium pool added: {}", pool_address);
-                            info!("    Coin mint: {}", amm_info.coin_mint.to_string());
-                            info!("    PC mint: {}", amm_info.pc_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Initialized Raydium pool: {}\n", raydium_pool_pubkey);
+                                pool_pubkey,
+                                token_vault,
+                                sol_vault,
+                                token_mint,
+                                base_mint,
+                            );
+                            info!("Raydium pool added: {}", pool_pubkey);
+                            info!("    Coin mint: {}", amm_info.coin_mint);
+                            info!("    PC mint: {}", amm_info.pc_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Initialized Raydium pool: {}\n", pool_pubkey);
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing AmmInfo from Raydium pool {}: {:?}",
-                                raydium_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(e);
                         }
@@ -570,7 +562,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Raydium pool account {}: {:?}",
-                        raydium_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching Raydium pool account"));
                 }
@@ -579,10 +571,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = raydium_cp_pools {
-        for pool_address in pools {
-            let raydium_cp_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&raydium_cp_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != raydium_cp_program_id() {
                         error!(
@@ -601,11 +591,11 @@ pub async fn initialize_pool_data(
                             {
                                 error!(
                                     "Mint {} is not present in Raydium CP pool {}, skipping",
-                                    pool_data.mint, raydium_cp_pool_pubkey
+                                    pool_data.mint, pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "Invalid Raydium CP pool: {}",
-                                    raydium_cp_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
@@ -616,43 +606,43 @@ pub async fn initialize_pool_data(
                             } else {
                                 error!(
                                     "SOL is not present in Raydium CP pool {}",
-                                    raydium_cp_pool_pubkey
+                                    pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "SOL is not present in Raydium CP pool: {}",
-                                    raydium_cp_pool_pubkey
+                                    pool_pubkey
                                 ));
                             };
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == amm_info.token_0_mint {
+                            let (token_mint, base_mint) = if mint == amm_info.token_0_mint {
                                 (amm_info.token_0_mint, amm_info.token_1_mint)
                             } else {
                                 (amm_info.token_1_mint, amm_info.token_0_mint)
                             };
-                            
+
                             pool_data.add_raydium_cp_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &amm_info.amm_config.to_string(),
-                                &amm_info.observation_key.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
-                            info!("Raydium CP pool added: {}", pool_address);
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    AMM Config: {}", amm_info.amm_config.to_string());
+                                pool_pubkey,
+                                token_vault,
+                                sol_vault,
+                                amm_info.amm_config,
+                                amm_info.observation_key,
+                                token_mint,
+                                base_mint,
+                            );
+                            info!("Raydium CP pool added: {}", pool_pubkey);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM Config: {}", amm_info.amm_config);
                             info!(
                                 "    Observation Key: {}\n",
-                                amm_info.observation_key.to_string()
+                                amm_info.observation_key
                             );
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing AmmInfo from Raydium CP pool {}: {:?}",
-                                raydium_cp_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(e);
                         }
@@ -661,7 +651,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Raydium CP pool account {}: {:?}",
-                        raydium_cp_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching Raydium CP pool account"));
                 }
@@ -669,10 +659,8 @@ pub async fn initialize_pool_data(
         }
     }
     if let Some(pools) = dlmm_pools {
-        for pool_address in pools {
-            let dlmm_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&dlmm_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != dlmm_program_id() {
                         error!(
@@ -686,54 +674,49 @@ pub async fn initialize_pool_data(
 
                     match DlmmInfo::load_checked(&account.data) {
                         Ok(amm_info) => {
-                            let sol_mint = sol_mint();
+                            let sol = sol_mint();
                             let (token_vault, sol_vault) =
-                                amm_info.get_token_and_sol_vaults(&pool_data.mint, &sol_mint);
+                                amm_info.get_token_and_sol_vaults(&pool_data.mint, &sol);
 
-                            let bin_arrays = match amm_info.calculate_bin_arrays(&dlmm_pool_pubkey)
+                            let bin_arrays = match amm_info.calculate_bin_arrays(&pool_pubkey)
                             {
                                 Ok(arrays) => arrays,
                                 Err(e) => {
                                     error!(
                                         "Error calculating bin arrays for DLMM pool {}: {:?}",
-                                        dlmm_pool_pubkey, e
+                                        pool_pubkey, e
                                     );
                                     return Err(e);
                                 }
                             };
 
-                            let bin_array_strings: Vec<String> =
-                                bin_arrays.iter().map(|pubkey| pubkey.to_string()).collect();
-                            let bin_array_str_refs: Vec<&str> =
-                                bin_array_strings.iter().map(|s| s.as_str()).collect();
-
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == amm_info.token_x_mint {
+                            let (token_mint, base_mint) = if mint == amm_info.token_x_mint {
                                 (amm_info.token_x_mint, amm_info.token_y_mint)
                             } else {
                                 (amm_info.token_y_mint, amm_info.token_x_mint)
                             };
-                            
-                            pool_data.add_dlmm_pool(
-                                pool_address,
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &amm_info.oracle.to_string(),
-                                bin_array_str_refs,
-                                None, // memo_program
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
 
-                            info!("DLMM pool added: {}", pool_address);
-                            info!("    Token X Mint: {}", amm_info.token_x_mint.to_string());
-                            info!("    Token Y Mint: {}", amm_info.token_y_mint.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Oracle: {}", amm_info.oracle.to_string());
+                            pool_data.add_dlmm_pool(
+                                pool_pubkey,
+                                token_vault,
+                                sol_vault,
+                                amm_info.oracle,
+                                bin_arrays.clone(),
+                                None, // memo_program
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("DLMM pool added: {}", pool_pubkey);
+                            info!("    Token X Mint: {}", amm_info.token_x_mint);
+                            info!("    Token Y Mint: {}", amm_info.token_y_mint);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Oracle: {}", amm_info.oracle);
                             info!("    Active ID: {}", amm_info.active_id);
 
-                            for (i, array) in bin_array_strings.iter().enumerate() {
+                            for (i, array) in bin_arrays.iter().enumerate() {
                                 info!("    Bin Array {}: {}", i, array);
                             }
                             info!("");
@@ -741,7 +724,7 @@ pub async fn initialize_pool_data(
                         Err(e) => {
                             error!(
                                 "Error parsing AmmInfo from DLMM pool {}: {:?}",
-                                dlmm_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(e);
                         }
@@ -750,7 +733,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching DLMM pool account {}: {:?}",
-                        dlmm_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching DLMM pool account"));
                 }
@@ -759,10 +742,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = whirlpool_pools {
-        for pool_address in pools {
-            let whirlpool_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&whirlpool_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != whirlpool_program_id() {
                         error!(
@@ -781,76 +762,73 @@ pub async fn initialize_pool_data(
                             {
                                 error!(
                                     "Mint {} is not present in Whirlpool pool {}, skipping",
-                                    pool_data.mint, whirlpool_pool_pubkey
+                                    pool_data.mint, pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "Invalid Whirlpool pool: {}",
-                                    whirlpool_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
-                            let sol_mint = sol_mint();
-                            let (sol_vault, token_vault) = if sol_mint == whirlpool.token_mint_a {
+                            let sol = sol_mint();
+                            let (sol_vault, token_vault) = if sol == whirlpool.token_mint_a {
                                 (whirlpool.token_vault_a, whirlpool.token_vault_b)
-                            } else if sol_mint == whirlpool.token_mint_b {
+                            } else if sol == whirlpool.token_mint_b {
                                 (whirlpool.token_vault_b, whirlpool.token_vault_a)
                             } else {
                                 error!(
                                     "SOL is not present in Whirlpool pool {}",
-                                    whirlpool_pool_pubkey
+                                    pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "SOL is not present in Whirlpool pool: {}",
-                                    whirlpool_pool_pubkey
+                                    pool_pubkey
                                 ));
                             };
 
                             let whirlpool_oracle = Pubkey::find_program_address(
-                                &[b"oracle", whirlpool_pool_pubkey.as_ref()],
+                                &[b"oracle", pool_pubkey.as_ref()],
                                 &whirlpool_program_id(),
                             )
                             .0;
 
                             let whirlpool_tick_arrays = update_tick_array_accounts_for_onchain(
                                 &whirlpool,
-                                &whirlpool_pool_pubkey,
+                                &pool_pubkey,
                                 &whirlpool_program_id(),
                             );
 
-                            let tick_array_strings: Vec<String> = whirlpool_tick_arrays
+                            let tick_arrays: Vec<Pubkey> = whirlpool_tick_arrays
                                 .iter()
-                                .map(|meta| meta.pubkey.to_string())
+                                .map(|meta| meta.pubkey)
                                 .collect();
 
-                            let tick_array_str_refs: Vec<&str> =
-                                tick_array_strings.iter().map(|s| s.as_str()).collect();
-
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == whirlpool.token_mint_a {
+                            let (token_mint, base_mint) = if mint == whirlpool.token_mint_a {
                                 (whirlpool.token_mint_a, whirlpool.token_mint_b)
                             } else {
                                 (whirlpool.token_mint_b, whirlpool.token_mint_a)
                             };
-                            
+
                             pool_data.add_whirlpool_pool(
-                                pool_address,
-                                &whirlpool_oracle.to_string(),
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                tick_array_str_refs,
+                                pool_pubkey,
+                                whirlpool_oracle,
+                                token_vault,
+                                sol_vault,
+                                tick_arrays.clone(),
                                 None, // memo_program
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
+                                token_mint,
+                                base_mint,
+                            );
 
-                            info!("Whirlpool pool added: {}", pool_address);
-                            info!("    Token mint A: {}", whirlpool.token_mint_a.to_string());
-                            info!("    Token mint B: {}", whirlpool.token_mint_b.to_string());
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    Oracle: {}", whirlpool_oracle.to_string());
+                            info!("Whirlpool pool added: {}", pool_pubkey);
+                            info!("    Token mint A: {}", whirlpool.token_mint_a);
+                            info!("    Token mint B: {}", whirlpool.token_mint_b);
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    Oracle: {}", whirlpool_oracle);
 
-                            for (i, array) in tick_array_strings.iter().enumerate() {
+                            for (i, array) in tick_arrays.iter().enumerate() {
                                 info!("    Tick Array {}: {}", i, array);
                             }
                             info!("");
@@ -858,7 +836,7 @@ pub async fn initialize_pool_data(
                         Err(e) => {
                             error!(
                                 "Error parsing Whirlpool data from pool {}: {:?}",
-                                whirlpool_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(anyhow::anyhow!("Error parsing Whirlpool data"));
                         }
@@ -867,7 +845,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Whirlpool pool account {}: {:?}",
-                        whirlpool_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching Whirlpool pool account"));
                 }
@@ -876,15 +854,15 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = raydium_clmm_pools {
-        for pool_address in pools {
-            let raydium_clmm_program_id = raydium_clmm_program_id();
+        for &pool_pubkey in pools {
+            let raydium_clmm_prog_id = raydium_clmm_program_id();
 
-            match rpc_client.get_account(&Pubkey::from_str(pool_address)?) {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
-                    if account.owner != raydium_clmm_program_id {
+                    if account.owner != raydium_clmm_prog_id {
                         error!(
                             "Raydium CLMM pool {} is not owned by the Raydium CLMM program, skipping",
-                            pool_address
+                            pool_pubkey
                         );
                         continue;
                     }
@@ -896,75 +874,67 @@ pub async fn initialize_pool_data(
                             {
                                 error!(
                                     "Mint {} is not present in Raydium CLMM pool {}, skipping",
-                                    pool_data.mint, pool_address
+                                    pool_data.mint, pool_pubkey
                                 );
                                 continue;
                             }
 
-                            let sol_mint = sol_mint();
-                            let (token_vault, sol_vault) = if sol_mint == raydium_clmm.token_mint_0
+                            let sol = sol_mint();
+                            let (token_vault, sol_vault) = if sol == raydium_clmm.token_mint_0
                             {
                                 (raydium_clmm.token_vault_1, raydium_clmm.token_vault_0)
-                            } else if sol_mint == raydium_clmm.token_mint_1 {
+                            } else if sol == raydium_clmm.token_mint_1 {
                                 (raydium_clmm.token_vault_0, raydium_clmm.token_vault_1)
                             } else {
-                                error!("SOL is not present in Raydium CLMM pool {}", pool_address);
+                                error!("SOL is not present in Raydium CLMM pool {}", pool_pubkey);
                                 continue;
                             };
 
-                            let tick_array_pubkeys = get_tick_array_pubkeys(
-                                &Pubkey::from_str(pool_address)?,
+                            let tick_arrays = get_tick_array_pubkeys(
+                                &pool_pubkey,
                                 raydium_clmm.tick_current,
                                 raydium_clmm.tick_spacing,
                                 &[-1, 0, 1],
-                                &raydium_clmm_program_id,
+                                &raydium_clmm_prog_id,
                             )?;
 
-                            let tick_array_strings: Vec<String> = tick_array_pubkeys
-                                .iter()
-                                .map(|pubkey| pubkey.to_string())
-                                .collect();
-
-                            let tick_array_str_refs: Vec<&str> =
-                                tick_array_strings.iter().map(|s| s.as_str()).collect();
-
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == raydium_clmm.token_mint_0 {
+                            let (token_mint, base_mint) = if mint == raydium_clmm.token_mint_0 {
                                 (raydium_clmm.token_mint_0, raydium_clmm.token_mint_1)
                             } else {
                                 (raydium_clmm.token_mint_1, raydium_clmm.token_mint_0)
                             };
-                            
-                            pool_data.add_raydium_clmm_pool(
-                                pool_address,
-                                &raydium_clmm.amm_config.to_string(),
-                                &raydium_clmm.observation_key.to_string(),
-                                &token_vault.to_string(),
-                                &sol_vault.to_string(),
-                                tick_array_str_refs,
-                                None, // memo_program
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
 
-                            info!("Raydium CLMM pool added: {}", pool_address);
+                            pool_data.add_raydium_clmm_pool(
+                                pool_pubkey,
+                                raydium_clmm.amm_config,
+                                raydium_clmm.observation_key,
+                                token_vault,
+                                sol_vault,
+                                tick_arrays.clone(),
+                                None, // memo_program
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("Raydium CLMM pool added: {}", pool_pubkey);
                             info!(
                                 "    Token mint 0: {}",
-                                raydium_clmm.token_mint_0.to_string()
+                                raydium_clmm.token_mint_0
                             );
                             info!(
                                 "    Token mint 1: {}",
-                                raydium_clmm.token_mint_1.to_string()
+                                raydium_clmm.token_mint_1
                             );
-                            info!("    Token vault: {}", token_vault.to_string());
-                            info!("    Sol vault: {}", sol_vault.to_string());
-                            info!("    AMM config: {}", raydium_clmm.amm_config.to_string());
+                            info!("    Token vault: {}", token_vault);
+                            info!("    Sol vault: {}", sol_vault);
+                            info!("    AMM config: {}", raydium_clmm.amm_config);
                             info!(
                                 "    Observation key: {}",
-                                raydium_clmm.observation_key.to_string()
+                                raydium_clmm.observation_key
                             );
 
-                            for (i, array) in tick_array_strings.iter().enumerate() {
+                            for (i, array) in tick_arrays.iter().enumerate() {
                                 info!("    Tick Array {}: {}", i, array);
                             }
                             info!("");
@@ -972,7 +942,7 @@ pub async fn initialize_pool_data(
                         Err(e) => {
                             error!(
                                 "Error parsing Raydium CLMM data from pool {}: {:?}",
-                                pool_address, e
+                                pool_pubkey, e
                             );
                             continue;
                         }
@@ -981,7 +951,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Raydium CLMM pool account {}: {:?}",
-                        pool_address, e
+                        pool_pubkey, e
                     );
                     continue;
                 }
@@ -990,10 +960,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = meteora_damm_pools {
-        for pool_address in pools {
-            let meteora_damm_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&meteora_damm_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != damm_program_id() {
                         error!(
@@ -1012,27 +980,27 @@ pub async fn initialize_pool_data(
                             {
                                 error!(
                                     "Mint {} is not present in Meteora DAMM pool {}, skipping",
-                                    pool_data.mint, meteora_damm_pool_pubkey
+                                    pool_data.mint, pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "Invalid Meteora DAMM pool: {}",
-                                    meteora_damm_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
-                            let sol_mint = sol_mint();
-                            if pool.token_a_mint != sol_mint && pool.token_b_mint != sol_mint {
+                            let sol = sol_mint();
+                            if pool.token_a_mint != sol && pool.token_b_mint != sol {
                                 error!(
                                     "SOL is not present in Meteora DAMM pool {}",
-                                    meteora_damm_pool_pubkey
+                                    pool_pubkey
                                 );
                                 return Err(anyhow::anyhow!(
                                     "SOL is not present in Meteora DAMM pool: {}",
-                                    meteora_damm_pool_pubkey
+                                    pool_pubkey
                                 ));
                             }
 
-                            let (x_vault, sol_vault) = if sol_mint == pool.token_a_mint {
+                            let (x_vault, sol_vault) = if sol == pool.token_a_mint {
                                 (pool.b_vault, pool.a_vault)
                             } else {
                                 (pool.a_vault, pool.b_vault)
@@ -1054,56 +1022,56 @@ pub async fn initialize_pool_data(
                             let x_lp_mint = x_vault_obj.lp_mint;
                             let sol_lp_mint = sol_vault_obj.lp_mint;
 
-                            let (x_pool_lp, sol_pool_lp) = if sol_mint == pool.token_a_mint {
+                            let (x_pool_lp, sol_pool_lp) = if sol == pool.token_a_mint {
                                 (pool.b_vault_lp, pool.a_vault_lp)
                             } else {
                                 (pool.a_vault_lp, pool.b_vault_lp)
                             };
 
-                            let (x_admin_fee, sol_admin_fee) = if sol_mint == pool.token_a_mint {
+                            let (x_admin_fee, sol_admin_fee) = if sol == pool.token_a_mint {
                                 (pool.admin_token_b_fee, pool.admin_token_a_fee)
                             } else {
                                 (pool.admin_token_a_fee, pool.admin_token_b_fee)
                             };
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == pool.token_a_mint {
+                            let (token_mint, base_mint) = if mint == pool.token_a_mint {
                                 (pool.token_a_mint, pool.token_b_mint)
                             } else {
                                 (pool.token_b_mint, pool.token_a_mint)
                             };
-                            
-                            pool_data.add_meteora_damm_pool(
-                                pool_address,
-                                &x_vault.to_string(),
-                                &sol_vault.to_string(),
-                                &x_token_vault.to_string(),
-                                &sol_token_vault.to_string(),
-                                &x_lp_mint.to_string(),
-                                &sol_lp_mint.to_string(),
-                                &x_pool_lp.to_string(),
-                                &sol_pool_lp.to_string(),
-                                &x_admin_fee.to_string(),
-                                &sol_admin_fee.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
 
-                            info!("Meteora DAMM pool added: {}", pool_address);
-                            info!("    Token X vault: {}", x_token_vault.to_string());
-                            info!("    SOL vault: {}", sol_token_vault.to_string());
-                            info!("    Token X LP mint: {}", x_lp_mint.to_string());
-                            info!("    SOL LP mint: {}", sol_lp_mint.to_string());
-                            info!("    Token X pool LP: {}", x_pool_lp.to_string());
-                            info!("    SOL pool LP: {}", sol_pool_lp.to_string());
-                            info!("    Token X admin fee: {}", x_admin_fee.to_string());
-                            info!("    SOL admin fee: {}", sol_admin_fee.to_string());
+                            pool_data.add_meteora_damm_pool(
+                                pool_pubkey,
+                                x_vault,
+                                sol_vault,
+                                x_token_vault,
+                                sol_token_vault,
+                                x_lp_mint,
+                                sol_lp_mint,
+                                x_pool_lp,
+                                sol_pool_lp,
+                                x_admin_fee,
+                                sol_admin_fee,
+                                token_mint,
+                                base_mint,
+                            );
+
+                            info!("Meteora DAMM pool added: {}", pool_pubkey);
+                            info!("    Token X vault: {}", x_token_vault);
+                            info!("    SOL vault: {}", sol_token_vault);
+                            info!("    Token X LP mint: {}", x_lp_mint);
+                            info!("    SOL LP mint: {}", sol_lp_mint);
+                            info!("    Token X pool LP: {}", x_pool_lp);
+                            info!("    SOL pool LP: {}", sol_pool_lp);
+                            info!("    Token X admin fee: {}", x_admin_fee);
+                            info!("    SOL admin fee: {}", sol_admin_fee);
                             info!("");
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing Meteora DAMM pool data from pool {}: {:?}",
-                                meteora_damm_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             return Err(anyhow::anyhow!("Error parsing Meteora DAMM pool data"));
                         }
@@ -1112,7 +1080,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Meteora DAMM pool account {}: {:?}",
-                        meteora_damm_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     return Err(anyhow::anyhow!("Error fetching Meteora DAMM pool account"));
                 }
@@ -1121,66 +1089,65 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = meteora_damm_v2_pools {
-        for pool_address in pools {
-            let meteora_damm_v2_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&meteora_damm_v2_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != damm_v2_program_id() {
-                        error!("Meteora DAMM V2 pool {} is not owned by the Meteora DAMM V2 program, skipping", pool_address);
+                        error!("Meteora DAMM V2 pool {} is not owned by the Meteora DAMM V2 program, skipping", pool_pubkey);
                         continue;
                     }
 
                     match MeteoraDAmmV2Info::load_checked(&account.data) {
                         Ok(meteora_damm_v2_info) => {
-                            info!("Meteora DAMM V2 pool added: {}", pool_address);
+                            info!("Meteora DAMM V2 pool added: {}", pool_pubkey);
                             info!(
                                 "    Base mint: {}",
-                                meteora_damm_v2_info.base_mint.to_string()
+                                meteora_damm_v2_info.base_mint
                             );
                             info!(
                                 "    Quote mint: {}",
-                                meteora_damm_v2_info.quote_mint.to_string()
+                                meteora_damm_v2_info.quote_mint
                             );
                             info!(
                                 "    Base vault: {}",
-                                meteora_damm_v2_info.base_vault.to_string()
+                                meteora_damm_v2_info.base_vault
                             );
                             info!(
                                 "    Quote vault: {}",
-                                meteora_damm_v2_info.quote_vault.to_string()
+                                meteora_damm_v2_info.quote_vault
                             );
                             info!("");
-                            let token_x_vault = if sol_mint() == meteora_damm_v2_info.base_mint {
+                            let sol = sol_mint();
+                            let token_x_vault = if sol == meteora_damm_v2_info.base_mint {
                                 meteora_damm_v2_info.quote_vault
                             } else {
                                 meteora_damm_v2_info.base_vault
                             };
 
-                            let token_sol_vault = if sol_mint() == meteora_damm_v2_info.base_mint {
+                            let token_sol_vault = if sol == meteora_damm_v2_info.base_mint {
                                 meteora_damm_v2_info.base_vault
                             } else {
                                 meteora_damm_v2_info.quote_vault
                             };
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == meteora_damm_v2_info.base_mint {
+                            let (token_mint, base_mint) = if mint == meteora_damm_v2_info.base_mint {
                                 (meteora_damm_v2_info.base_mint, meteora_damm_v2_info.quote_mint)
                             } else {
                                 (meteora_damm_v2_info.quote_mint, meteora_damm_v2_info.base_mint)
                             };
-                            
+
                             pool_data.add_meteora_damm_v2_pool(
-                                pool_address,
-                                &token_x_vault.to_string(),
-                                &token_sol_vault.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
+                                pool_pubkey,
+                                token_x_vault,
+                                token_sol_vault,
+                                token_mint,
+                                base_mint,
+                            );
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing Meteora DAMM V2 pool data from pool {}: {:?}",
-                                meteora_damm_v2_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             continue;
                         }
@@ -1189,7 +1156,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Meteora DAMM V2 pool account {}: {:?}",
-                        meteora_damm_v2_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     continue;
                 }
@@ -1198,10 +1165,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = vertigo_pools {
-        for pool_address in pools {
-            let vertigo_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&vertigo_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != vertigo_program_id() {
                         error!(
@@ -1213,24 +1178,22 @@ pub async fn initialize_pool_data(
                         ));
                     }
 
-                    match VertigoInfo::load_checked(&account.data, &vertigo_pool_pubkey) {
+                    match VertigoInfo::load_checked(&account.data, &pool_pubkey) {
                         Ok(vertigo_info) => {
-                            info!("Vertigo pool added: {}", pool_address);
-                            info!("    Mint A: {}", vertigo_info.mint_a.to_string());
-                            info!("    Mint B: {}", vertigo_info.mint_b.to_string());
-
-                            let base_mint = pool_data.mint.to_string();
+                            info!("Vertigo pool added: {}", pool_pubkey);
+                            info!("    Mint A: {}", vertigo_info.mint_a);
+                            info!("    Mint B: {}", vertigo_info.mint_b);
 
                             // Following the original loading pattern from user's code:
-                            let non_base_vault = if base_mint == vertigo_info.mint_a.to_string() {
-                                derive_vault_address(&vertigo_pool_pubkey, &vertigo_info.mint_b).0
+                            let non_base_vault = if pool_data.mint == vertigo_info.mint_a {
+                                derive_vault_address(&pool_pubkey, &vertigo_info.mint_b).0
                             } else {
-                                derive_vault_address(&vertigo_pool_pubkey, &vertigo_info.mint_a).0
+                                derive_vault_address(&pool_pubkey, &vertigo_info.mint_a).0
                             };
-                            let base_vault = if base_mint == vertigo_info.mint_a.to_string() {
-                                derive_vault_address(&vertigo_pool_pubkey, &vertigo_info.mint_a).0
+                            let base_vault = if pool_data.mint == vertigo_info.mint_a {
+                                derive_vault_address(&pool_pubkey, &vertigo_info.mint_a).0
                             } else {
-                                derive_vault_address(&vertigo_pool_pubkey, &vertigo_info.mint_b).0
+                                derive_vault_address(&pool_pubkey, &vertigo_info.mint_b).0
                             };
 
                             // Map to transaction expected fields:
@@ -1238,30 +1201,30 @@ pub async fn initialize_pool_data(
                             let token_x_vault = base_vault; // vault for our trading token
                             let token_sol_vault = non_base_vault; // vault for SOL
 
-                            info!("    Token X Vault: {}", token_x_vault.to_string());
-                            info!("    Token SOL Vault: {}", token_sol_vault.to_string());
+                            info!("    Token X Vault: {}", token_x_vault);
+                            info!("    Token SOL Vault: {}", token_sol_vault);
                             info!("");
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == vertigo_info.mint_a {
+                            let (token_mint, base_mint) = if mint == vertigo_info.mint_a {
                                 (vertigo_info.mint_a, vertigo_info.mint_b)
                             } else {
                                 (vertigo_info.mint_b, vertigo_info.mint_a)
                             };
-                            
+
                             pool_data.add_vertigo_pool(
-                                pool_address,
-                                &vertigo_info.pool.to_string(),
-                                &token_x_vault.to_string(),
-                                &token_sol_vault.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                            )?;
+                                pool_pubkey,
+                                vertigo_info.pool,
+                                token_x_vault,
+                                token_sol_vault,
+                                token_mint,
+                                base_mint,
+                            );
                         }
                         Err(e) => {
                             error!(
                                 "Error parsing Vertigo pool data from pool {}: {:?}",
-                                vertigo_pool_pubkey, e
+                                pool_pubkey, e
                             );
                             continue;
                         }
@@ -1270,7 +1233,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Vertigo pool account {}: {:?}",
-                        vertigo_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     continue;
                 }
@@ -1279,10 +1242,8 @@ pub async fn initialize_pool_data(
     }
 
     if let Some(pools) = heaven_pools {
-        for pool_address in pools {
-            let heaven_pool_pubkey = Pubkey::from_str(pool_address)?;
-
-            match rpc_client.get_account(&heaven_pool_pubkey) {
+        for &pool_pubkey in pools {
+            match rpc_client.get_account(&pool_pubkey) {
                 Ok(account) => {
                     if account.owner != heaven_program_id() {
                         error!(
@@ -1296,32 +1257,32 @@ pub async fn initialize_pool_data(
 
                     match HeavenPoolState::parse(&account.data) {
                         Some(heaven_info) => {
-                            info!("Heaven pool added: {}", pool_address);
-                            info!("    Mint A: {}", heaven_info.mint_a.to_string());
-                            info!("    Mint B: {}", heaven_info.mint_b.to_string());
-                            info!("    Vault A: {}", heaven_info.vault_a.to_string());
-                            info!("    Vault B: {}", heaven_info.vault_b.to_string());
-                            info!("    Protocol Config: {}", heaven_info.protocol_config.to_string());
+                            info!("Heaven pool added: {}", pool_pubkey);
+                            info!("    Mint A: {}", heaven_info.mint_a);
+                            info!("    Mint B: {}", heaven_info.mint_b);
+                            info!("    Vault A: {}", heaven_info.vault_a);
+                            info!("    Vault B: {}", heaven_info.vault_b);
+                            info!("    Protocol Config: {}", heaven_info.protocol_config);
                             info!("    Reserve A: {}", heaven_info.reserve_a);
                             info!("    Reserve B: {}", heaven_info.reserve_b);
 
                             // Determine which vault corresponds to token and base
-                            let (token_x_vault, token_base_vault) = 
-                                if mint_pubkey == heaven_info.mint_a {
+                            let (token_x_vault, token_base_vault) =
+                                if mint == heaven_info.mint_a {
                                     (heaven_info.vault_a, heaven_info.vault_b)
                                 } else {
                                     (heaven_info.vault_b, heaven_info.vault_a)
                                 };
 
                             // Determine token_mint and base_mint
-                            let (token_mint, base_mint) = if mint_pubkey == heaven_info.mint_a {
+                            let (token_mint, base_mint) = if mint == heaven_info.mint_a {
                                 (heaven_info.mint_a, heaven_info.mint_b)
                             } else {
                                 (heaven_info.mint_b, heaven_info.mint_a)
                             };
 
                             // Validate that the base mint is either SOL or USDC
-                            let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+                            let usdc_mint: Pubkey = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".parse().unwrap();
                             if base_mint != sol_mint() && base_mint != usdc_mint {
                                 error!(
                                     "Invalid Heaven pool: Expected SOL or USDC as base mint, but found {}",
@@ -1332,30 +1293,22 @@ pub async fn initialize_pool_data(
                                 ));
                             }
 
-                            // Determine token program - check if either mint is Token-2022
-                            let token_2022_program_id =
-                                Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
-                            
-                            // For now, use the same token program as the mint
-                            // TODO: Check both mints to determine if Token-2022 is needed
-                            let token_program = token_program;
-
                             pool_data.add_heaven_pool(
-                                pool_address,
-                                &heaven_info.protocol_config.to_string(),
-                                &token_x_vault.to_string(),
-                                &token_base_vault.to_string(),
-                                &token_mint.to_string(),
-                                &base_mint.to_string(),
-                                &token_program.to_string(),
-                            )?;
-                            
-                            info!("    Initialized Heaven pool: {}\n", heaven_pool_pubkey);
+                                pool_pubkey,
+                                heaven_info.protocol_config,
+                                token_x_vault,
+                                token_base_vault,
+                                token_mint,
+                                base_mint,
+                                token_program,
+                            );
+
+                            info!("    Initialized Heaven pool: {}\n", pool_pubkey);
                         }
                         None => {
                             error!(
                                 "Error parsing Heaven pool data from pool {}",
-                                heaven_pool_pubkey
+                                pool_pubkey
                             );
                             return Err(anyhow::anyhow!("Failed to parse Heaven pool data"));
                         }
@@ -1364,7 +1317,7 @@ pub async fn initialize_pool_data(
                 Err(e) => {
                     error!(
                         "Error fetching Heaven pool account {}: {:?}",
-                        heaven_pool_pubkey, e
+                        pool_pubkey, e
                     );
                     continue;
                 }
