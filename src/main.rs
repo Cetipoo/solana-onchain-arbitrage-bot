@@ -2,6 +2,7 @@ mod bot;
 mod config;
 mod constants;
 mod dex;
+mod pool_refreshers;
 mod pools;
 mod refresh;
 mod transaction;
