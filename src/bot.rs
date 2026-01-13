@@ -55,7 +55,7 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
     // Initialize pools from markets config (auto-detect DEX types and group by mint)
     let mint_pool_data_map = initialize_pools_from_markets(
         &config.routing.markets,
-        &wallet_kp.pubkey().to_string(),
+        &wallet_kp.pubkey(),
         rpc_client.clone(),
     )
     .await?;
