@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::pool_refreshers::PoolDataRefresher;
 use crate::refresh::initialize_pools_from_markets;
 use crate::transaction::build_and_send_transaction;
 use anyhow::Context;
@@ -14,7 +15,7 @@ use solana_sdk::{
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
@@ -166,6 +167,7 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
 
     let lookup_table_accounts_list = Arc::new(lookup_table_accounts_list);
     let process_delay = Duration::from_millis(config.routing.markets.process_delay);
+    let pool_refresh_interval = Duration::from_secs(5);
 
     // Spawn processing task for each mint
     for (mint, pool_data) in mint_pool_data_map {
@@ -179,9 +181,32 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
         let wallet_kp_clone = Keypair::from_bytes(&wallet_bytes).unwrap();
         let lookup_tables = lookup_table_accounts_list.clone();
         let mint_str = mint.to_string();
+        let rpc_client_clone = rpc_client.clone();
 
         tokio::spawn(async move {
+            // Pool refresher for CLMM pools (DLMM, Whirlpool, Raydium CLMM, PancakeSwap, Byreal)
+            let pool_refresher = PoolDataRefresher::new();
+            let mut last_pool_refresh = Instant::now()
+                .checked_sub(pool_refresh_interval)
+                .unwrap_or_else(Instant::now);
+
             loop {
+                // Check if pool refresh is needed (every 5 seconds)
+                let now = Instant::now();
+                if now.duration_since(last_pool_refresh) >= pool_refresh_interval {
+                    let mut guard = mint_pool_data.lock().await;
+                    match pool_refresher.refresh_all_pools(&mut guard, &rpc_client_clone, false) {
+                        Ok(_) => {
+                            last_pool_refresh = now;
+                            info!("Pool data refreshed for mint {}", mint_str);
+                        }
+                        Err(e) => {
+                            error!("Failed to refresh pool data for mint {}: {}", mint_str, e);
+                        }
+                    }
+                    drop(guard);
+                }
+
                 let latest_blockhash = {
                     let guard = cached_blockhash_clone.lock().await;
                     *guard
@@ -210,6 +235,7 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
                     }
                 }
 
+                drop(guard);
                 tokio::time::sleep(process_delay).await;
             }
         });
