@@ -1,18 +1,16 @@
+use crate::ata::ensure_base_atas_exist;
 use crate::config::Config;
 use crate::pool_refreshers::PoolDataRefresher;
 use crate::refresh::initialize_pools_from_markets;
 use crate::transaction::build_and_send_transaction;
 use anyhow::Context;
 use solana_client::rpc_client::RpcClient;
+use solana_sdk::address_lookup_table::state::AddressLookupTable;
 use solana_sdk::address_lookup_table::AddressLookupTableAccount;
 use solana_sdk::hash::Hash;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use solana_sdk::{
-    address_lookup_table::state::AddressLookupTable, compute_budget::ComputeBudgetInstruction,
-};
-use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,63 +61,9 @@ pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
 
     info!("Initialized {} mints from markets config", mint_pool_data_map.len());
 
-    // Create ATAs for all discovered mints
-    for mint in mint_pool_data_map.keys() {
-        // Get the mint account info to check owner
-        let mint_owner = rpc_client.get_account(mint)?.owner;
-        let wallet_token_account = get_associated_token_address_with_program_id(
-            &wallet_kp.pubkey(),
-            mint,
-            &mint_owner,
-        );
-
-        println!("   Token mint: {}", mint);
-        println!("   Wallet token ATA: {}", wallet_token_account);
-        println!("\n   Checking if token account exists...");
-
-        loop {
-            match rpc_client.get_account(&wallet_token_account) {
-                Ok(_) => {
-                    println!("   token account exists!");
-                    break;
-                }
-                Err(_) => {
-                    println!("   token account does not exist. Creating it...");
-
-                    let create_ata_ix =
-                        spl_associated_token_account::instruction::create_associated_token_account_idempotent(
-                            &wallet_kp.pubkey(),
-                            &wallet_kp.pubkey(),
-                            mint,
-                            &mint_owner,
-                        );
-
-                    let blockhash = rpc_client.get_latest_blockhash()?;
-                    let compute_unit_price_ix =
-                        ComputeBudgetInstruction::set_compute_unit_price(1_000_000);
-                    let compute_unit_limit_ix =
-                        ComputeBudgetInstruction::set_compute_unit_limit(60_000);
-
-                    let create_ata_tx = solana_sdk::transaction::Transaction::new_signed_with_payer(
-                        &[compute_unit_price_ix, compute_unit_limit_ix, create_ata_ix],
-                        Some(&wallet_kp.pubkey()),
-                        &[&wallet_kp],
-                        blockhash,
-                    );
-
-                    match rpc_client.send_and_confirm_transaction(&create_ata_tx) {
-                        Ok(sig) => {
-                            println!("   token account created successfully! Signature: {}", sig);
-                        }
-                        Err(e) => {
-                            println!("   Failed to create token account: {:?}", e);
-                            return Err(anyhow::anyhow!("Failed to create token account"));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Ensure base token ATAs (WSOL, USDC, USD1) exist
+    // Route token ATAs are NOT created here - the on-chain program creates them as needed
+    ensure_base_atas_exist(&rpc_client, &wallet_kp)?;
 
     // Load lookup tables (global config)
     let mut lookup_table_addresses = config.routing.markets.lookup_table_accounts.clone().unwrap_or_default();

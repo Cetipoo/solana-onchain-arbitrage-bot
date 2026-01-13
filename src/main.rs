@@ -1,3 +1,4 @@
+mod ata;
 mod bot;
 mod config;
 mod constants;
