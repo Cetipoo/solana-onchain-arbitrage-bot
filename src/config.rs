@@ -18,29 +18,12 @@ pub struct BotConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RoutingConfig {
-    pub mint_config_list: Vec<MintConfig>,
+    pub markets: MarketsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct MintConfig {
-    pub mint: String,
-
-    pub raydium_pool_list: Option<Vec<String>>,
-    pub raydium_cp_pool_list: Option<Vec<String>>,
-    pub raydium_clmm_pool_list: Option<Vec<String>>,
-
-    pub meteora_dlmm_pool_list: Option<Vec<String>>,
-    pub meteora_damm_pool_list: Option<Vec<String>>,
-    pub meteora_damm_v2_pool_list: Option<Vec<String>>,
-
-    pub pump_pool_list: Option<Vec<String>>,
-
-    pub whirlpool_pool_list: Option<Vec<String>>,
-
-    pub vertigo_pool_list: Option<Vec<String>>,
-
-    pub heaven_pool_list: Option<Vec<String>>,
-
+pub struct MarketsConfig {
+    pub markets: Vec<String>,
     pub lookup_table_accounts: Option<Vec<String>>,
     pub process_delay: u64,
 }

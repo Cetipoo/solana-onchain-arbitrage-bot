@@ -1,4 +1,6 @@
+use crate::config::MarketsConfig;
 use crate::constants::sol_mint;
+use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
@@ -7,7 +9,6 @@ use crate::dex::raydium::{
     get_tick_array_pubkeys, raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
     PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
 };
-use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::vertigo::{derive_vault_address, vertigo_program_id, VertigoInfo};
 use crate::dex::whirlpool::{
     constants::whirlpool_program_id, state::Whirlpool, update_tick_array_accounts_for_onchain,
@@ -16,9 +17,322 @@ use crate::pools::*;
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
 use spl_associated_token_account;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+/// Enum representing the different DEX pool types
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MarketPoolKind {
+    Pump,
+    RaydiumV4,
+    RaydiumCp,
+    RaydiumClmm,
+    MeteoraDlmm,
+    MeteoraDamm,
+    MeteoraDammV2,
+    Whirlpool,
+    Vertigo,
+    Heaven,
+}
+
+/// Internal structure for grouping pools by mint during detection
+#[derive(Default)]
+struct MintPoolsBuilder {
+    pump_pools: Vec<String>,
+    raydium_pools: Vec<String>,
+    raydium_cp_pools: Vec<String>,
+    raydium_clmm_pools: Vec<String>,
+    dlmm_pools: Vec<String>,
+    damm_pools: Vec<String>,
+    damm_v2_pools: Vec<String>,
+    whirlpool_pools: Vec<String>,
+    vertigo_pools: Vec<String>,
+    heaven_pools: Vec<String>,
+}
+
+/// Detect the pool kind based on the account owner (program ID)
+pub fn detect_pool_kind(owner: &Pubkey) -> Option<MarketPoolKind> {
+    if *owner == pump_program_id() {
+        Some(MarketPoolKind::Pump)
+    } else if *owner == raydium_program_id() {
+        Some(MarketPoolKind::RaydiumV4)
+    } else if *owner == raydium_cp_program_id() {
+        Some(MarketPoolKind::RaydiumCp)
+    } else if *owner == raydium_clmm_program_id() {
+        Some(MarketPoolKind::RaydiumClmm)
+    } else if *owner == dlmm_program_id() {
+        Some(MarketPoolKind::MeteoraDlmm)
+    } else if *owner == damm_program_id() {
+        Some(MarketPoolKind::MeteoraDamm)
+    } else if *owner == damm_v2_program_id() {
+        Some(MarketPoolKind::MeteoraDammV2)
+    } else if *owner == whirlpool_program_id() {
+        Some(MarketPoolKind::Whirlpool)
+    } else if *owner == vertigo_program_id() {
+        Some(MarketPoolKind::Vertigo)
+    } else if *owner == heaven_program_id() {
+        Some(MarketPoolKind::Heaven)
+    } else {
+        None
+    }
+}
+
+/// Extract the non-SOL token mint from a pool based on its kind
+fn extract_token_mint(
+    kind: MarketPoolKind,
+    data: &[u8],
+    pool_pubkey: &Pubkey,
+) -> anyhow::Result<Option<Pubkey>> {
+    let sol = sol_mint();
+
+    match kind {
+        MarketPoolKind::Pump => {
+            let info = PumpAmmInfo::load_checked(data)?;
+            let token_mint = if info.base_mint == sol {
+                info.quote_mint
+            } else if info.quote_mint == sol {
+                info.base_mint
+            } else {
+                return Ok(None); // Neither side is SOL
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::RaydiumV4 => {
+            let info = RaydiumAmmInfo::load_checked(data)?;
+            let token_mint = if info.coin_mint == sol {
+                info.pc_mint
+            } else if info.pc_mint == sol {
+                info.coin_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::RaydiumCp => {
+            let info = RaydiumCpAmmInfo::load_checked(data)?;
+            let token_mint = if info.token_0_mint == sol {
+                info.token_1_mint
+            } else if info.token_1_mint == sol {
+                info.token_0_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::RaydiumClmm => {
+            let info = PoolState::load_checked(data)?;
+            let token_mint = if info.token_mint_0 == sol {
+                info.token_mint_1
+            } else if info.token_mint_1 == sol {
+                info.token_mint_0
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::MeteoraDlmm => {
+            let info = DlmmInfo::load_checked(data)?;
+            let token_mint = if info.token_x_mint == sol {
+                info.token_y_mint
+            } else if info.token_y_mint == sol {
+                info.token_x_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::MeteoraDamm => {
+            let pool = meteora_damm_cpi::Pool::deserialize_unchecked(data)?;
+            let token_mint = if pool.token_a_mint == sol {
+                pool.token_b_mint
+            } else if pool.token_b_mint == sol {
+                pool.token_a_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::MeteoraDammV2 => {
+            let info = MeteoraDAmmV2Info::load_checked(data)?;
+            let token_mint = if info.base_mint == sol {
+                info.quote_mint
+            } else if info.quote_mint == sol {
+                info.base_mint
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::Whirlpool => {
+            let whirlpool = Whirlpool::try_deserialize(data)?;
+            let token_mint = if whirlpool.token_mint_a == sol {
+                whirlpool.token_mint_b
+            } else if whirlpool.token_mint_b == sol {
+                whirlpool.token_mint_a
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::Vertigo => {
+            let info = VertigoInfo::load_checked(data, pool_pubkey)?;
+            let token_mint = if info.mint_a == sol {
+                info.mint_b
+            } else if info.mint_b == sol {
+                info.mint_a
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+        MarketPoolKind::Heaven => {
+            let info = HeavenPoolState::parse(data).ok_or_else(|| {
+                anyhow::anyhow!("Failed to parse Heaven pool")
+            })?;
+            let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+            let token_mint = if info.mint_a == sol || info.mint_a == usdc_mint {
+                info.mint_b
+            } else if info.mint_b == sol || info.mint_b == usdc_mint {
+                info.mint_a
+            } else {
+                return Ok(None);
+            };
+            Ok(Some(token_mint))
+        }
+    }
+}
+
+/// Initialize pools from a simplified markets config
+/// This function:
+/// 1. Fetches all market accounts
+/// 2. Detects the pool kind for each
+/// 3. Extracts the token mint
+/// 4. Groups pools by mint
+/// 5. Initializes MintPoolData for each mint
+pub async fn initialize_pools_from_markets(
+    markets_config: &MarketsConfig,
+    wallet_account: &str,
+    rpc_client: Arc<RpcClient>,
+) -> anyhow::Result<HashMap<Pubkey, MintPoolData>> {
+    info!("Initializing pools from {} markets", markets_config.markets.len());
+
+    // Parse all market addresses
+    let market_pubkeys: Vec<Pubkey> = markets_config
+        .markets
+        .iter()
+        .filter_map(|s| {
+            match Pubkey::from_str(s) {
+                Ok(pk) => Some(pk),
+                Err(e) => {
+                    error!("Invalid market address {}: {}", s, e);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    if market_pubkeys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Fetch all accounts in batches
+    let mut mint_pools: HashMap<Pubkey, MintPoolsBuilder> = HashMap::new();
+
+    // Process in batches of 100 (RPC limit for getMultipleAccounts)
+    for chunk in market_pubkeys.chunks(100) {
+        let accounts = rpc_client.get_multiple_accounts(chunk)?;
+
+        for (i, maybe_account) in accounts.iter().enumerate() {
+            let pool_pubkey = chunk[i];
+
+            let account = match maybe_account {
+                Some(acc) => acc,
+                None => {
+                    warn!("Market account {} not found", pool_pubkey);
+                    continue;
+                }
+            };
+
+            // Detect pool kind
+            let kind = match detect_pool_kind(&account.owner) {
+                Some(k) => k,
+                None => {
+                    warn!(
+                        "Unknown pool program {} for market {}",
+                        account.owner, pool_pubkey
+                    );
+                    continue;
+                }
+            };
+
+            info!("Detected {:?} pool: {}", kind, pool_pubkey);
+
+            // Extract token mint
+            let token_mint = match extract_token_mint(kind, &account.data, &pool_pubkey) {
+                Ok(Some(mint)) => mint,
+                Ok(None) => {
+                    warn!("Pool {} does not have SOL as one side, skipping", pool_pubkey);
+                    continue;
+                }
+                Err(e) => {
+                    error!("Failed to parse pool {}: {}", pool_pubkey, e);
+                    continue;
+                }
+            };
+
+            info!("  Token mint: {}", token_mint);
+
+            // Group by mint
+            let builder = mint_pools.entry(token_mint).or_default();
+            let pool_str = pool_pubkey.to_string();
+
+            match kind {
+                MarketPoolKind::Pump => builder.pump_pools.push(pool_str),
+                MarketPoolKind::RaydiumV4 => builder.raydium_pools.push(pool_str),
+                MarketPoolKind::RaydiumCp => builder.raydium_cp_pools.push(pool_str),
+                MarketPoolKind::RaydiumClmm => builder.raydium_clmm_pools.push(pool_str),
+                MarketPoolKind::MeteoraDlmm => builder.dlmm_pools.push(pool_str),
+                MarketPoolKind::MeteoraDamm => builder.damm_pools.push(pool_str),
+                MarketPoolKind::MeteoraDammV2 => builder.damm_v2_pools.push(pool_str),
+                MarketPoolKind::Whirlpool => builder.whirlpool_pools.push(pool_str),
+                MarketPoolKind::Vertigo => builder.vertigo_pools.push(pool_str),
+                MarketPoolKind::Heaven => builder.heaven_pools.push(pool_str),
+            }
+        }
+    }
+
+    info!("Found {} unique token mints", mint_pools.len());
+
+    // Initialize MintPoolData for each mint
+    let mut result: HashMap<Pubkey, MintPoolData> = HashMap::new();
+
+    for (mint, builder) in mint_pools {
+        info!("Initializing pools for mint: {}", mint);
+
+        let pool_data = initialize_pool_data(
+            &mint.to_string(),
+            wallet_account,
+            if builder.raydium_pools.is_empty() { None } else { Some(&builder.raydium_pools) },
+            if builder.raydium_cp_pools.is_empty() { None } else { Some(&builder.raydium_cp_pools) },
+            if builder.pump_pools.is_empty() { None } else { Some(&builder.pump_pools) },
+            if builder.dlmm_pools.is_empty() { None } else { Some(&builder.dlmm_pools) },
+            if builder.whirlpool_pools.is_empty() { None } else { Some(&builder.whirlpool_pools) },
+            if builder.raydium_clmm_pools.is_empty() { None } else { Some(&builder.raydium_clmm_pools) },
+            if builder.damm_pools.is_empty() { None } else { Some(&builder.damm_pools) },
+            if builder.damm_v2_pools.is_empty() { None } else { Some(&builder.damm_v2_pools) },
+            if builder.vertigo_pools.is_empty() { None } else { Some(&builder.vertigo_pools) },
+            if builder.heaven_pools.is_empty() { None } else { Some(&builder.heaven_pools) },
+            rpc_client.clone(),
+        )
+        .await?;
+
+        result.insert(mint, pool_data);
+    }
+
+    Ok(result)
+}
 
 pub async fn initialize_pool_data(
     mint: &str,
