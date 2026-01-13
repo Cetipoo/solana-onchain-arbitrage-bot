@@ -145,17 +145,6 @@ fn create_swap_instruction(
     let executor_program_id =
         Pubkey::from_str("MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz").unwrap();
 
-    let fee_collector = if use_flashloan {
-        Pubkey::from_str("6AGB9kqgSp2mQXwYpdrV4QVV8urvCaDS35U1wsLssy6H").unwrap()
-    } else {
-        let fee_accounts = [
-            Pubkey::from_str("GPpkDpzCDmYJY5qNhYmM14c7rct1zmkjWc2CjR5g7RZ1").unwrap(),
-            Pubkey::from_str("J6c7noBHvWju4mMA3wXt3igbBSp2m9ATbA6cjMtAUged").unwrap(),
-            Pubkey::from_str("BjsfwxDu7GX7RRW6oSRTpMkASdXAgCcHnXEcatqSfuuY").unwrap(),
-        ];
-        fee_accounts[rand::random::<usize>() % fee_accounts.len()]
-    };
-
     let pump_global_config =
         Pubkey::from_str("ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw").unwrap();
     let pump_authority = Pubkey::from_str("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR").unwrap();
@@ -169,41 +158,42 @@ fn create_swap_instruction(
     let usdc_mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
     let usd1_mint = Pubkey::from_str("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB").unwrap();
 
-    let mut accounts = vec![
-        AccountMeta::new(wallet, true), // 0. Wallet (signer)
-        AccountMeta::new_readonly(sol_mint_pubkey, false), // 1. SOL mint
-        AccountMeta::new(fee_collector, false), // 2. Fee collector
-        AccountMeta::new(wallet_sol_account, false), // 3. Wallet SOL account
-        AccountMeta::new_readonly(token_program_id, false), // 4. Token program
-        AccountMeta::new_readonly(system_program::ID, false), // 5. System program
-        AccountMeta::new_readonly(associated_token_program_id, false), // 6. Associated Token program
-    ];
-
-    // Determine the base mint for flashloan if needed
+    // Step 1: Determine flashloan_base_mint FIRST by checking ALL pool types
     let flashloan_base_mint = if use_flashloan {
         // For flashloan, we need a common base mint across all pools
-        // Check if all pools use SOL as base mint
+        // Check if all pools use SOL as base mint or all use USDC
         let mut all_sol_base = true;
         let mut all_usdc_base = true;
 
-        // Check all pool types to see their base mints
-        for pool in &mint_pool_data.raydium_pools {
-            if pool.base_mint != sol_mint_pubkey {
-                all_sol_base = false;
-            }
-            if pool.base_mint != usdc_mint {
-                all_usdc_base = false;
-            }
+        // Helper macro to check pools
+        macro_rules! check_pool_base_mints {
+            ($pools:expr) => {
+                for pool in $pools {
+                    if pool.base_mint != sol_mint_pubkey {
+                        all_sol_base = false;
+                    }
+                    if pool.base_mint != usdc_mint {
+                        all_usdc_base = false;
+                    }
+                }
+            };
         }
-        for pool in &mint_pool_data.raydium_cp_pools {
-            if pool.base_mint != sol_mint_pubkey {
-                all_sol_base = false;
-            }
-            if pool.base_mint != usdc_mint {
-                all_usdc_base = false;
-            }
-        }
-        // Add other pool type checks as needed...
+
+        // Check all pool types
+        check_pool_base_mints!(&mint_pool_data.raydium_pools);
+        check_pool_base_mints!(&mint_pool_data.raydium_cp_pools);
+        check_pool_base_mints!(&mint_pool_data.pump_pools);
+        check_pool_base_mints!(&mint_pool_data.dlmm_pairs);
+        check_pool_base_mints!(&mint_pool_data.whirlpool_pools);
+        check_pool_base_mints!(&mint_pool_data.raydium_clmm_pools);
+        check_pool_base_mints!(&mint_pool_data.meteora_damm_pools);
+        check_pool_base_mints!(&mint_pool_data.meteora_damm_v2_pools);
+        check_pool_base_mints!(&mint_pool_data.vertigo_pools);
+        check_pool_base_mints!(&mint_pool_data.heaven_pools);
+        check_pool_base_mints!(&mint_pool_data.futarchy_pools);
+        check_pool_base_mints!(&mint_pool_data.humidifi_pools);
+        check_pool_base_mints!(&mint_pool_data.pancakeswap_pools);
+        check_pool_base_mints!(&mint_pool_data.byreal_pools);
 
         if all_sol_base {
             sol_mint_pubkey
@@ -217,16 +207,63 @@ fn create_swap_instruction(
         sol_mint_pubkey
     };
 
+    // Step 2: Determine base_mint and wallet_base_account based on flashloan_base_mint
+    let (base_mint_pubkey, wallet_base_account) = if flashloan_base_mint == usdc_mint {
+        let wallet_usdc_account = spl_associated_token_account::get_associated_token_address(
+            &wallet,
+            &usdc_mint,
+        );
+        (usdc_mint, wallet_usdc_account)
+    } else {
+        (sol_mint_pubkey, wallet_sol_account)
+    };
+
+    // Step 3: Determine fee_collector based on flashloan and base_mint
+    let fee_collector = if use_flashloan {
+        // Flashloan always uses the flashloan fee collector (handles both SOL and USDC)
+        Pubkey::from_str("6AGB9kqgSp2mQXwYpdrV4QVV8urvCaDS35U1wsLssy6H").unwrap()
+    } else if base_mint_pubkey == usdc_mint {
+        // USDC base mint (without flashloan) must use USDC fee collector to avoid mint mismatch
+        Pubkey::from_str("GzVRuLF349u78FHpr8KbqMhrZ1aDxnhSF59JWiZ6tbgt").unwrap()
+    } else {
+        // SOL base mint uses random SOL fee collector
+        let fee_accounts = [
+            Pubkey::from_str("GPpkDpzCDmYJY5qNhYmM14c7rct1zmkjWc2CjR5g7RZ1").unwrap(),
+            Pubkey::from_str("J6c7noBHvWju4mMA3wXt3igbBSp2m9ATbA6cjMtAUged").unwrap(),
+            Pubkey::from_str("BjsfwxDu7GX7RRW6oSRTpMkASdXAgCcHnXEcatqSfuuY").unwrap(),
+        ];
+        fee_accounts[rand::random::<usize>() % fee_accounts.len()]
+    };
+
+    // Step 4: Build accounts vector with dynamic base_mint and wallet_base_account
+    let mut accounts = vec![
+        AccountMeta::new(wallet, true), // 0. Wallet (signer)
+        AccountMeta::new_readonly(base_mint_pubkey, false), // 1. Base mint (SOL or USDC)
+        AccountMeta::new(fee_collector, false), // 2. Fee collector
+        AccountMeta::new(wallet_base_account, false), // 3. Wallet base account
+        AccountMeta::new_readonly(token_program_id, false), // 4. Token program
+        AccountMeta::new_readonly(system_program::ID, false), // 5. System program
+        AccountMeta::new_readonly(associated_token_program_id, false), // 6. Associated Token program
+    ];
+
+    // Step 5: Add flashloan accounts with USDC vault_index=0 constraint
     if use_flashloan {
         let vault_authorities = [
             Pubkey::from_str("5LFpzqgsxrSfhKwbaFiAEJ2kbc9QyimjKueswsyU4T3o").unwrap(),
             Pubkey::from_str("4B2yxi8n7jr8w3K7cssokLNJZ6k2NjiwKwLdQ8L9dbAA").unwrap(),
         ];
-        let vault_index = rand::random::<usize>() % vault_authorities.len();
+        // USDC flashloan uses the PDA vault (index 0) only
+        let vault_index = if flashloan_base_mint == usdc_mint {
+            0
+        } else {
+            rand::random::<usize>() % vault_authorities.len()
+        };
         let vault_authority = vault_authorities[vault_index];
         accounts.push(AccountMeta::new_readonly(vault_authority, false));
 
-        let vault_token_account = if vault_index == 0 {
+        // Vault index 0 uses PDA-derived token account, index 1 uses associated token account
+        // Defensive check: always use PDA for USDC regardless of vault_index
+        let vault_token_account = if vault_index == 0 || flashloan_base_mint == usdc_mint {
             let token_pda = derive_vault_token_account(&executor_program_id, &flashloan_base_mint);
             token_pda.0
         } else {
@@ -238,81 +275,80 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new(vault_token_account, false));
     }
 
-    // Check for mixed mode (USDC base)
+    // Step 6: Check for mixed mode (some pools have USDC/USD1 as base while main base is SOL)
     let mut has_usdc_base = false;
     let mut has_usd1_base = false;
 
-    // Check all pools to see if any have USDC as base mint
-    for pool in &mint_pool_data.raydium_pools {
-        if pool.base_mint == usdc_mint {
-            has_usdc_base = true;
-            break;
-        }
-    }
-    if !has_usdc_base {
-        for pool in &mint_pool_data.raydium_cp_pools {
-            if pool.base_mint == usdc_mint {
-                has_usdc_base = true;
-                break;
+    // Helper macro to check for USDC/USD1 base mints in pools
+    macro_rules! check_for_stable_base {
+        ($pools:expr) => {
+            for pool in $pools {
+                if pool.base_mint == usdc_mint {
+                    has_usdc_base = true;
+                }
+                if pool.base_mint == usd1_mint {
+                    has_usd1_base = true;
+                }
             }
-        }
+        };
     }
 
-    if !has_usd1_base {
-        for pool in &mint_pool_data.raydium_pools {
-            if pool.base_mint == usd1_mint {
-                has_usd1_base = true;
-                break;
-            }
+    // Check all pool types for USDC/USD1 base mints
+    check_for_stable_base!(&mint_pool_data.raydium_pools);
+    check_for_stable_base!(&mint_pool_data.raydium_cp_pools);
+    check_for_stable_base!(&mint_pool_data.pump_pools);
+    check_for_stable_base!(&mint_pool_data.dlmm_pairs);
+    check_for_stable_base!(&mint_pool_data.whirlpool_pools);
+    check_for_stable_base!(&mint_pool_data.raydium_clmm_pools);
+    check_for_stable_base!(&mint_pool_data.meteora_damm_pools);
+    check_for_stable_base!(&mint_pool_data.meteora_damm_v2_pools);
+    check_for_stable_base!(&mint_pool_data.vertigo_pools);
+    check_for_stable_base!(&mint_pool_data.heaven_pools);
+    check_for_stable_base!(&mint_pool_data.futarchy_pools);
+    check_for_stable_base!(&mint_pool_data.humidifi_pools);
+    check_for_stable_base!(&mint_pool_data.pancakeswap_pools);
+    check_for_stable_base!(&mint_pool_data.byreal_pools);
+
+    // Mixed mode is ONLY supported when base_mint is SOL
+    // If base_mint is USDC, all pools should already be USDC-based (no mixing needed)
+    if (has_usdc_base || has_usd1_base) && base_mint_pubkey == sol_mint_pubkey {
+        if has_usdc_base {
+            let wallet_usdc_account =
+                spl_associated_token_account::get_associated_token_address(&wallet, &usdc_mint);
+            let raydium_sol_usdc_pool =
+                Pubkey::from_str("58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2").unwrap();
+            let raydium_usdc_vault =
+                Pubkey::from_str("HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz").unwrap();
+            let raydium_sol_vault =
+                Pubkey::from_str("DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz").unwrap();
+
+            accounts.push(AccountMeta::new_readonly(usdc_mint, false));
+            accounts.push(AccountMeta::new(wallet_usdc_account, false));
+            accounts.push(AccountMeta::new_readonly(raydium_program_id(), false));
+            accounts.push(AccountMeta::new_readonly(raydium_authority(), false));
+            accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
+            accounts.push(AccountMeta::new(raydium_sol_usdc_pool, false));
+            accounts.push(AccountMeta::new(raydium_usdc_vault, false));
+            accounts.push(AccountMeta::new(raydium_sol_vault, false));
+        } else if has_usd1_base {
+            let wallet_usd1_account =
+                spl_associated_token_account::get_associated_token_address(&wallet, &usd1_mint);
+            let raydium_sol_usd1_pool =
+                Pubkey::from_str("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq").unwrap();
+            let raydium_usd1_vault =
+                Pubkey::from_str("GLx7TdT66CPKYJBn3Pzc9khrfXEx6mXtAiE8uskGBQJq").unwrap();
+            let raydium_sol_vault =
+                Pubkey::from_str("3U9HB8KNHXmAmiGMbDsj6fBxzM63dfX5JbaYs5oTHbtu").unwrap();
+
+            accounts.push(AccountMeta::new_readonly(usd1_mint, false));
+            accounts.push(AccountMeta::new(wallet_usd1_account, false));
+            accounts.push(AccountMeta::new_readonly(raydium_program_id(), false));
+            accounts.push(AccountMeta::new_readonly(raydium_authority(), false));
+            accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
+            accounts.push(AccountMeta::new(raydium_sol_usd1_pool, false));
+            accounts.push(AccountMeta::new(raydium_usd1_vault, false));
+            accounts.push(AccountMeta::new(raydium_sol_vault, false));
         }
-    }
-    if !has_usd1_base {
-        for pool in &mint_pool_data.raydium_cp_pools {
-            if pool.base_mint == usd1_mint {
-                has_usd1_base = true;
-                break;
-            }
-        }
-    }
-    // Check other pool types as needed...
-
-    // If mixed mode is detected, add the required accounts
-    if has_usdc_base {
-        let wallet_usdc_account =
-            spl_associated_token_account::get_associated_token_address(&wallet, &usdc_mint);
-        let raydium_sol_usdc_pool =
-            Pubkey::from_str("58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2").unwrap();
-        let raydium_usdc_vault =
-            Pubkey::from_str("HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz").unwrap();
-        let raydium_sol_vault =
-            Pubkey::from_str("DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz").unwrap();
-
-        accounts.push(AccountMeta::new_readonly(usdc_mint, false));
-        accounts.push(AccountMeta::new(wallet_usdc_account, false));
-        accounts.push(AccountMeta::new_readonly(raydium_program_id(), false));
-        accounts.push(AccountMeta::new_readonly(raydium_authority(), false));
-        accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
-        accounts.push(AccountMeta::new(raydium_sol_usdc_pool, false));
-        accounts.push(AccountMeta::new(raydium_usdc_vault, false));
-        accounts.push(AccountMeta::new(raydium_sol_vault, false));
-    } else if has_usd1_base {
-        let wallet_usd1_account =
-            spl_associated_token_account::get_associated_token_address(&wallet, &usd1_mint);
-        let raydium_sol_usd1_pool =
-            Pubkey::from_str("FaDoeere161VKUFqcrQEM8it6kSCHKrLyq7wWyPvBkPq").unwrap();
-        let raydium_usd1_vault =
-            Pubkey::from_str("GLx7TdT66CPKYJBn3Pzc9khrfXEx6mXtAiE8uskGBQJq").unwrap();
-        let raydium_sol_vault =
-            Pubkey::from_str("3U9HB8KNHXmAmiGMbDsj6fBxzM63dfX5JbaYs5oTHbtu").unwrap();
-
-        accounts.push(AccountMeta::new_readonly(usd1_mint, false));
-        accounts.push(AccountMeta::new(wallet_usd1_account, false));
-        accounts.push(AccountMeta::new_readonly(raydium_program_id(), false));
-        accounts.push(AccountMeta::new_readonly(raydium_authority(), false));
-        accounts.push(AccountMeta::new_readonly(sysvar_instructions, false));
-        accounts.push(AccountMeta::new(raydium_sol_usd1_pool, false));
-        accounts.push(AccountMeta::new(raydium_usd1_vault, false));
-        accounts.push(AccountMeta::new(raydium_sol_vault, false));
     }
 
     // Add token mint and pools
