@@ -26,7 +26,7 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - Buildin flashloan integration
 - Parse all available pool types (Raydium, DLMM, Whirlpool, etc.)
 
-## Supported Dexes
+## Supported DEXes
 
 - Pump AMM
 - Raydium V4
@@ -38,6 +38,10 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - Orca Whirlpool
 - Vertigo
 - Heaven
+- Futarchy
+- Humidifi
+- PancakeSwap
+- Byreal
 
 ## Getting Started
 
@@ -71,54 +75,41 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 2. Edit `config.toml` and configure your:
    - Private key for your Solana wallet
    - RPC endpoint URL(s)
-3. Configure your trading pairs and pools:
-   - Update the `mint_config_list` with your desired token mints
-   - Add the corresponding pool addresses for each DEX type (Raydium, DLMM, Whirlpool, etc.)
-   - Ensure lookup table accounts are properly set for your trading pairs
+3. Add pool addresses to the `markets` list:
+   - DEX type is auto-detected by account owner (no need to specify pool type)
+   - Pools are automatically grouped by mint for arbitrage routing
+   - Optionally add lookup table accounts for transaction optimization
 
 ## Configuration Options
 
-### Bot Configuration
+### Bot Configuration (`[bot]`)
 
 - `compute_unit_limit`: Maximum compute unit limit per transaction
-- `process_delay`: Delay between processing iterations in milliseconds
 
-### Routing Configuration
+### Routing Configuration (`[routing.markets]`)
 
-- `mint_config_list`: List of mints to process
-  - `mint`: Mint address
-  - `raydium_pool_list`: List of Raydium pool addresses
-  - `meteora_damm_pool_list`: List of Meteora Dynamic AMM pool addresses
-  - `meteora_dlmm_pool_list`: List of Meteora DLMM pool addresses
-  - `meteora_damm_v2_pool_list`: List of Meteora DAMM V2 pool addresses
-  - `raydium_cp_pool_list`: List of Raydium CP pool addresses
-  - `pump_pool_list`: List of Pump pool addresses
-  - `whirlpool_pool_list`: List of Whirlpool pool addresses
-  - `raydium_clmm_pool_list`: List of Raydium CLMM pool addresses
-  - `vertigo_pool_list`: List of Vertigo pool addresses
-  - `heaven_pool_list`: List of Heaven pool addresses
-  - `lookup_table_accounts`: List of lookup table accounts
-  - `process_delay`: Process delay in milliseconds
+- `markets`: List of pool/market addresses (DEX type is auto-detected by account owner)
+- `lookup_table_accounts`: List of lookup table accounts (optional, shared across all pools)
+- `process_delay`: Delay between processing cycles in milliseconds
 
-### RPC Configuration
+### RPC Configuration (`[rpc]`)
 
-- `url`: RPC URL for the Solana network
+- `url`: RPC URL for the Solana network (supports environment variables with `$VAR_NAME`)
 
-### Spam Configuration
+### Spam Configuration (`[spam]`)
 
-- `enabled`: Enable spam transactions
+- `enabled`: Enable spam transactions (send through multiple RPC endpoints)
 - `sending_rpc_urls`: List of RPC URLs for sending transactions
-- `compute_unit_price`: Fixed compute unit price
-- `max_retries`: Maximum retries
-- `enable_simple_send`: Enable simple send mode
+- `compute_unit_price`: Fixed compute unit price in microlamports
+- `max_retries`: Maximum retries for transaction sending
 
-### Wallet Configuration
+### Wallet Configuration (`[wallet]`)
 
-- `private_key`: Private key (can be path or environment variable)
+- `private_key`: Private key - can be base58 string, file path, or environment variable (`$VAR_NAME`)
 
-### Flashloan Configuration
+### Flashloan Configuration (`[flashloan]`)
 
-- `enabled`: Enable flashloan
+- `enabled`: Enable flashloan integration
 
 ## License
 
