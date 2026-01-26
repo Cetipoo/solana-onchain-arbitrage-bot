@@ -1,35 +1,63 @@
-# Solana Onchain Arbitrage Bot
+# 🧪 Solana On-Chain Arbitrage Bot (Reference Implementation)
 
 [![Discord](https://dcbadge.limes.pink/api/server/https://discord.gg/ejEuhN5kcV)](https://discord.gg/ejEuhN5kcV)
 
-A simple Solana onchain arbitrage bot for arbitrage opportunities. This bot calculate the most optimal trade size between various DEX pools on Solana and executes trades when profitable opportunities are found. This repository utilizes the onchain program for executing arbitrage trades.
+A **reference Solana on-chain arbitrage bot** demonstrating how to parse liquidity pools, build arbitrage routes, and invoke the on-chain arbitrage program.
 
-The full featured bot can be found here:
-https://github.com/Cetipoo/solana-mev-bot
+This repository focuses on **pool parsing and program interaction**, and is intended as a **technical reference for advanced users**.
 
-**This is a demo bot to show how to parse each pool and call the onchain program.**
-**This is NOT a fully functional bot. This is only recommanded for advanced users to use as a reference.**
-**For new users please use the full featured bot to get started:**
-**https://docs.solanamevbot.com/home/onchain-bot/getting-started**
+---
 
-Full documentation for the onchain program:
-https://docs.solanamevbot.com/home/onchain-bot/onchain-program
+## ⚠️ Important Notice
 
-Example transaction:
-https://solscan.io/tx/2JtgbXAgwPib9L5Ruc5vLhQ5qeX5EMhVDQbcCaAYVJKpEFn22ArEqXhipu5fFyhrEwosiHWzRUhWispJUCYyAnKT
+> **This is NOT a fully featured or production-ready bot.**
 
-Program:
-https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
+- This repo is a **demo / reference implementation**
+- It shows **how to parse pools and call the on-chain program**
+- It is **not optimized**, **not fully automated**, and **not recommended for beginners**
 
-## Features
+### ✅ Recommended for new users
 
-- Load configuration from a config file
-- Create ATA if not exist
-- Send transactions through multiple RPC endpoints (spam)
-- Buildin flashloan integration
-- Parse all available pool types (Raydium, DLMM, Whirlpool, etc.)
+Use the **full featured production bot** instead:
 
-## Supported DEXes
+- Full bot repo:  
+  👉 https://github.com/Cetipoo/solana-mev-bot
+
+- Getting started guide:  
+  👉 https://docs.solanamevbot.com/home/onchain-bot/getting-started
+
+---
+
+## 📚 Documentation
+
+- **On-chain program documentation**  
+  👉 https://docs.solanamevbot.com/home/onchain-bot/onchain-program
+
+---
+
+## 🔗 On-Chain References
+
+- **Program ID**  
+  https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
+
+- **Example transaction**  
+  https://solscan.io/tx/2JtgbXAgwPib9L5Ruc5vLhQ5qeX5EMhVDQbcCaAYVJKpEFn22ArEqXhipu5fFyhrEwosiHWzRUhWispJUCYyAnKT
+
+---
+
+## ✨ Features (Demo Scope)
+
+- Load configuration from a TOML config file
+- Automatically create ATAs if missing
+- Send transactions through multiple RPC endpoints (spam mode)
+- Built-in flashloan integration
+- Parse multiple Solana AMM pool types
+- Auto-detect DEX type by account owner
+- Group pools by mint for arbitrage routing
+
+---
+
+## 🏦 Supported DEXes
 
 - Pump AMM
 - Raydium V4
@@ -46,12 +74,17 @@ https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 - PancakeSwap
 - Byreal
 
-## Getting Started
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Rust and Cargo installed
-- A Solana wallet with SOL
+- Rust & Cargo
+- A Solana wallet funded with SOL
+- One or more Solana RPC endpoints
+
+---
 
 ### Installation
 
