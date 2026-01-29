@@ -429,6 +429,15 @@ pub async fn initialize_pool_data(
     };
 
     info!("Detected token program: {}", token_program);
+
+    // Determine memo_program based on whether token uses Token 2022
+    // Token 2022 pools require the memo program in swap accounts
+    let memo_program_id: Option<Pubkey> = if token_program != spl_token::ID {
+        Some("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr".parse().unwrap())
+    } else {
+        None
+    };
+
     let mut pool_data = MintPoolData::new(mint, wallet_account, token_program);
     info!("Pool data initialized for mint: {}", mint);
 
@@ -769,7 +778,7 @@ pub async fn initialize_pool_data(
                                 sol_vault,
                                 amm_info.oracle,
                                 bin_arrays.clone(),
-                                None, // memo_program
+                                memo_program_id, // memo_program for Token 2022
                                 token_mint,
                                 base_mint,
                             );
@@ -882,7 +891,7 @@ pub async fn initialize_pool_data(
                                 token_vault,
                                 sol_vault,
                                 tick_arrays.clone(),
-                                None, // memo_program
+                                memo_program_id, // memo_program for Token 2022
                                 token_mint,
                                 base_mint,
                             );
@@ -978,7 +987,7 @@ pub async fn initialize_pool_data(
                                 token_vault,
                                 sol_vault,
                                 tick_arrays.clone(),
-                                None, // memo_program
+                                memo_program_id, // memo_program for Token 2022
                                 token_mint,
                                 base_mint,
                             );
@@ -1574,7 +1583,7 @@ pub async fn initialize_pool_data(
                                 token_vault,
                                 sol_vault,
                                 tick_arrays.clone(),
-                                None, // memo_program
+                                memo_program_id, // memo_program for Token 2022
                                 token_mint,
                                 base_mint,
                             );
@@ -1669,7 +1678,7 @@ pub async fn initialize_pool_data(
                                 token_vault,
                                 sol_vault,
                                 tick_arrays.clone(),
-                                None, // memo_program
+                                memo_program_id, // memo_program for Token 2022
                                 token_mint,
                                 base_mint,
                             );
