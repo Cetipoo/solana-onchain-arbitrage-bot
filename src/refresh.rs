@@ -519,6 +519,7 @@ pub async fn initialize_pool_data(
                                 token_mint,
                                 base_mint,
                                 amm_info.is_mayhem_mode,
+                                amm_info.is_cashback_coin,
                             );
                             info!("Pump pool added: {}", pool_pubkey);
                             info!("    Base mint: {}", amm_info.base_mint);
@@ -536,6 +537,7 @@ pub async fn initialize_pool_data(
                                 amm_info.coin_creator_vault_authority
                             );
                             info!("    Mayhem mode: {}", amm_info.is_mayhem_mode);
+                            info!("    Cashback coin: {}", amm_info.is_cashback_coin);
                             info!("    Initialized Pump pool: {}\n", pool_pubkey);
                         }
                         Err(e) => {

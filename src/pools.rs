@@ -43,6 +43,7 @@ pub struct PumpPool {
     pub token_mint: Pubkey,
     pub base_mint: Pubkey,
     pub is_mayhem_mode: bool,
+    pub is_cashback_coin: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +276,7 @@ impl MintPoolData {
         token_mint: Pubkey,
         base_mint: Pubkey,
         is_mayhem_mode: bool,
+        is_cashback_coin: bool,
     ) {
         self.pump_pools.push(PumpPool {
             pool,
@@ -287,6 +289,7 @@ impl MintPoolData {
             token_mint,
             base_mint,
             is_mayhem_mode,
+            is_cashback_coin,
         });
     }
 

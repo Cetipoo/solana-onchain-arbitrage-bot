@@ -14,6 +14,7 @@ pub struct PumpAmmInfo {
     pub coin_creator: Pubkey,
     pub coin_creator_vault_authority: Pubkey,
     pub is_mayhem_mode: bool,
+    pub is_cashback_coin: bool,
 }
 
 impl PumpAmmInfo {
@@ -40,6 +41,7 @@ impl PumpAmmInfo {
 
         let coin_creator_offset = pool_quote_offset + 8 + 32; // lp_supply + last_trade_timestamp
         let is_mayhem_mode_offset = coin_creator_offset + 32;
+        let is_cashback_coin_offset = is_mayhem_mode_offset + 1;
 
         let coin_creator = if coin_creator_offset + 32 > data.len() {
             Pubkey::default()
@@ -51,6 +53,11 @@ impl PumpAmmInfo {
             false
         } else {
             data[is_mayhem_mode_offset] != 0
+        };
+        let is_cashback_coin = if is_cashback_coin_offset >= data.len() {
+            false
+        } else {
+            data[is_cashback_coin_offset] != 0
         };
 
         let coin_creator_vault_authority = if coin_creator == Pubkey::default() {
@@ -71,6 +78,7 @@ impl PumpAmmInfo {
             coin_creator,
             coin_creator_vault_authority,
             is_mayhem_mode,
+            is_cashback_coin,
         })
     }
 }
