@@ -398,7 +398,7 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(pool.base_mint, false)); // V9: Add base mint
         accounts.push(AccountMeta::new_readonly(pump_global_config, false));
         accounts.push(AccountMeta::new_readonly(pump_authority, false));
-        accounts.push(AccountMeta::new_readonly(pool.fee_wallet, false));
+        accounts.push(AccountMeta::new(pool.fee_wallet, false));
         accounts.push(AccountMeta::new(pool.pool, false));
         accounts.push(AccountMeta::new(pool.token_vault, false));
         accounts.push(AccountMeta::new(pool.sol_vault, false));
@@ -432,7 +432,6 @@ fn create_swap_instruction(
                     &sol_mint_pubkey,
                 );
             accounts.push(AccountMeta::new(user_volume_accumulator_wsol_ata, false));
-            accounts.push(AccountMeta::new(user_volume_accumulator, false));
         }
 
         // Pump AMM v2 pool PDA
