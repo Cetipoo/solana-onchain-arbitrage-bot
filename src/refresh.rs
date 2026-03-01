@@ -1,17 +1,18 @@
 use crate::config::MarketsConfig;
 use crate::constants::sol_mint;
-use crate::dex::byreal::{byreal_program_id, byreal_authority};
+use crate::dex::byreal::byreal_program_id;
 use crate::dex::futarchy::{futarchy_program_id, FutarchyInfo};
 use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::humidifi::{humidifi_program_id, HumidifiInfo};
 use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
-use crate::dex::pancakeswap::{pancakeswap_program_id, pancakeswap_authority};
+use crate::dex::pancakeswap::pancakeswap_program_id;
 use crate::dex::pump::{pump_fee_wallet, pump_mayhem_fee_wallet, pump_program_id, PumpAmmInfo};
 use crate::dex::raydium::{
-    get_tick_array_pubkeys, raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
-    PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
+    get_initialized_tick_array_pubkeys, parse_bitmap_extension, raydium_clmm_program_id,
+    raydium_cp_program_id, raydium_program_id, PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
+    POOL_TICK_ARRAY_BITMAP_SEED,
 };
 use crate::dex::vertigo::{derive_vault_address, vertigo_program_id, VertigoInfo};
 use crate::dex::whirlpool::{
@@ -967,13 +968,33 @@ pub async fn initialize_pool_data(
                                 continue;
                             };
 
-                            let tick_arrays = get_tick_array_pubkeys(
-                                &pool_pubkey,
-                                raydium_clmm.tick_current,
-                                raydium_clmm.tick_spacing,
-                                &[-1, 0, 1],
+                            let bitmap_extension = Pubkey::find_program_address(
+                                &[
+                                    POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(),
+                                    pool_pubkey.as_ref(),
+                                ],
                                 &raydium_clmm_prog_id,
-                            )?;
+                            )
+                            .0;
+                            let bitmap_extension_state = rpc_client
+                                .get_account(&bitmap_extension)
+                                .ok()
+                                .and_then(|account| parse_bitmap_extension(&account.data));
+                            let tick_arrays = match get_initialized_tick_array_pubkeys(
+                                &pool_pubkey,
+                                &raydium_clmm,
+                                bitmap_extension_state.as_ref(),
+                                &raydium_clmm_prog_id,
+                            ) {
+                                Ok(arrays) => arrays,
+                                Err(e) => {
+                                    error!(
+                                        "Raydium CLMM pool {} tick bitmap lookup failed: {:?}",
+                                        pool_pubkey, e
+                                    );
+                                    continue;
+                                }
+                            };
 
                             // Determine token_mint and base_mint
                             let (token_mint, base_mint) = if mint == raydium_clmm.token_mint_0 {
@@ -1564,13 +1585,33 @@ pub async fn initialize_pool_data(
                                 continue;
                             };
 
-                            let tick_arrays = get_tick_array_pubkeys(
-                                &pool_pubkey,
-                                pool_state.tick_current,
-                                pool_state.tick_spacing,
-                                &[-1, 0, 1],
+                            let bitmap_extension = Pubkey::find_program_address(
+                                &[
+                                    POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(),
+                                    pool_pubkey.as_ref(),
+                                ],
                                 &pancakeswap_prog_id,
-                            )?;
+                            )
+                            .0;
+                            let bitmap_extension_state = rpc_client
+                                .get_account(&bitmap_extension)
+                                .ok()
+                                .and_then(|account| parse_bitmap_extension(&account.data));
+                            let tick_arrays = match get_initialized_tick_array_pubkeys(
+                                &pool_pubkey,
+                                &pool_state,
+                                bitmap_extension_state.as_ref(),
+                                &pancakeswap_prog_id,
+                            ) {
+                                Ok(arrays) => arrays,
+                                Err(e) => {
+                                    error!(
+                                        "PancakeSwap pool {} tick bitmap lookup failed: {:?}",
+                                        pool_pubkey, e
+                                    );
+                                    continue;
+                                }
+                            };
 
                             let (token_mint, base_mint) = if mint == pool_state.token_mint_0 {
                                 (pool_state.token_mint_0, pool_state.token_mint_1)
@@ -1659,13 +1700,33 @@ pub async fn initialize_pool_data(
                                 continue;
                             };
 
-                            let tick_arrays = get_tick_array_pubkeys(
-                                &pool_pubkey,
-                                pool_state.tick_current,
-                                pool_state.tick_spacing,
-                                &[-1, 0, 1],
+                            let bitmap_extension = Pubkey::find_program_address(
+                                &[
+                                    POOL_TICK_ARRAY_BITMAP_SEED.as_bytes(),
+                                    pool_pubkey.as_ref(),
+                                ],
                                 &byreal_prog_id,
-                            )?;
+                            )
+                            .0;
+                            let bitmap_extension_state = rpc_client
+                                .get_account(&bitmap_extension)
+                                .ok()
+                                .and_then(|account| parse_bitmap_extension(&account.data));
+                            let tick_arrays = match get_initialized_tick_array_pubkeys(
+                                &pool_pubkey,
+                                &pool_state,
+                                bitmap_extension_state.as_ref(),
+                                &byreal_prog_id,
+                            ) {
+                                Ok(arrays) => arrays,
+                                Err(e) => {
+                                    error!(
+                                        "Byreal pool {} tick bitmap lookup failed: {:?}",
+                                        pool_pubkey, e
+                                    );
+                                    continue;
+                                }
+                            };
 
                             let (token_mint, base_mint) = if mint == pool_state.token_mint_0 {
                                 (pool_state.token_mint_0, pool_state.token_mint_1)

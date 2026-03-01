@@ -1,7 +1,9 @@
 use crate::dex::byreal::byreal_program_id;
 use crate::dex::meteora::dlmm_info::DlmmInfo;
 use crate::dex::pancakeswap::pancakeswap_program_id;
-use crate::dex::raydium::{get_tick_array_pubkeys, raydium_clmm_program_id, PoolState};
+use crate::dex::raydium::{
+    get_initialized_tick_array_pubkeys, parse_bitmap_extension, raydium_clmm_program_id, PoolState,
+};
 use crate::dex::whirlpool::constants::whirlpool_program_id;
 use crate::dex::whirlpool::state::Whirlpool;
 use crate::dex::whirlpool::update_tick_array_accounts_for_onchain;
@@ -136,11 +138,15 @@ pub fn refresh_raydium_clmm_pools(
 
                 match PoolState::load_checked(&account.data) {
                     Ok(pool_state) => {
-                        match get_tick_array_pubkeys(
+                        let bitmap_extension_state = rpc_client
+                            .get_account(&pool.bitmap_extension)
+                            .ok()
+                            .and_then(|account| parse_bitmap_extension(&account.data));
+
+                        match get_initialized_tick_array_pubkeys(
                             &pool.pool,
-                            pool_state.tick_current,
-                            pool_state.tick_spacing,
-                            &[-1, 0, 1],
+                            &pool_state,
+                            bitmap_extension_state.as_ref(),
                             program_id,
                         ) {
                             Ok(tick_arrays) => {
@@ -194,11 +200,15 @@ pub fn refresh_pancakeswap_pools(
 
                 match PoolState::load_checked(&account.data) {
                     Ok(pool_state) => {
-                        match get_tick_array_pubkeys(
+                        let bitmap_extension_state = rpc_client
+                            .get_account(&pool.bitmap_extension)
+                            .ok()
+                            .and_then(|account| parse_bitmap_extension(&account.data));
+
+                        match get_initialized_tick_array_pubkeys(
                             &pool.pool,
-                            pool_state.tick_current,
-                            pool_state.tick_spacing,
-                            &[-1, 0, 1],
+                            &pool_state,
+                            bitmap_extension_state.as_ref(),
                             program_id,
                         ) {
                             Ok(tick_arrays) => {
@@ -252,11 +262,15 @@ pub fn refresh_byreal_pools(
 
                 match PoolState::load_checked(&account.data) {
                     Ok(pool_state) => {
-                        match get_tick_array_pubkeys(
+                        let bitmap_extension_state = rpc_client
+                            .get_account(&pool.bitmap_extension)
+                            .ok()
+                            .and_then(|account| parse_bitmap_extension(&account.data));
+
+                        match get_initialized_tick_array_pubkeys(
                             &pool.pool,
-                            pool_state.tick_current,
-                            pool_state.tick_spacing,
-                            &[-1, 0, 1],
+                            &pool_state,
+                            bitmap_extension_state.as_ref(),
                             program_id,
                         ) {
                             Ok(tick_arrays) => {
