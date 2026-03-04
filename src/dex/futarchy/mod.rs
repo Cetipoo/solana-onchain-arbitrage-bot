@@ -8,3 +8,7 @@ use std::str::FromStr;
 pub fn futarchy_program_id() -> Pubkey {
     Pubkey::from_str("FUTARELBfJfQ8RDGhg1wdhddq1odMAJUePHFuBYfUxKq").unwrap()
 }
+
+pub fn futarchy_event_authority() -> Pubkey {
+    Pubkey::from_str("DGEympSS4qLvdr9r3uGHTfACdN8snShk4iGdJtZPxuBC").unwrap()
+}

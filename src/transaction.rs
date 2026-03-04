@@ -559,9 +559,10 @@ fn create_swap_instruction(
     for pool in &mint_pool_data.futarchy_pools {
         accounts.push(AccountMeta::new_readonly(futarchy_program_id(), false));
         accounts.push(AccountMeta::new_readonly(pool.base_mint, false));
+        accounts.push(AccountMeta::new_readonly(pool.event_authority, false));
         accounts.push(AccountMeta::new(pool.dao, false));
         accounts.push(AccountMeta::new(pool.token_x_vault, false));
-        accounts.push(AccountMeta::new(pool.token_sol_vault, false));
+        accounts.push(AccountMeta::new(pool.token_base_vault, false));
     }
 
     // Add Humidifi pools

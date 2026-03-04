@@ -133,9 +133,10 @@ pub struct HeavenPool {
 
 #[derive(Debug, Clone)]
 pub struct FutarchyPool {
+    pub event_authority: Pubkey,
     pub dao: Pubkey,
     pub token_x_vault: Pubkey,
-    pub token_sol_vault: Pubkey,
+    pub token_base_vault: Pubkey,
     pub token_mint: Pubkey,
     pub base_mint: Pubkey,
 }
@@ -466,16 +467,18 @@ impl MintPoolData {
 
     pub fn add_futarchy_pool(
         &mut self,
+        event_authority: Pubkey,
         dao: Pubkey,
         token_x_vault: Pubkey,
-        token_sol_vault: Pubkey,
+        token_base_vault: Pubkey,
         token_mint: Pubkey,
         base_mint: Pubkey,
     ) {
         self.futarchy_pools.push(FutarchyPool {
+            event_authority,
             dao,
             token_x_vault,
-            token_sol_vault,
+            token_base_vault,
             token_mint,
             base_mint,
         });

@@ -1,7 +1,7 @@
 use crate::config::MarketsConfig;
 use crate::constants::sol_mint;
 use crate::dex::byreal::byreal_program_id;
-use crate::dex::futarchy::{futarchy_program_id, FutarchyInfo};
+use crate::dex::futarchy::{futarchy_event_authority, futarchy_program_id, FutarchyInfo};
 use crate::dex::heaven::{heaven_program_id, HeavenPoolState};
 use crate::dex::humidifi::{humidifi_program_id, HumidifiInfo};
 use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
@@ -1443,23 +1443,34 @@ pub async fn initialize_pool_data(
                             info!("    Base vault: {}", futarchy_info.base_vault);
                             info!("    Quote vault: {}", futarchy_info.quote_vault);
 
-                            let sol = sol_mint();
-                            let (token_x_vault, token_sol_vault) = if sol == futarchy_info.base_mint {
-                                (futarchy_info.quote_vault, futarchy_info.base_vault)
-                            } else {
-                                (futarchy_info.base_vault, futarchy_info.quote_vault)
-                            };
-
-                            let (token_mint, base_mint) = if mint == futarchy_info.base_mint {
-                                (futarchy_info.base_mint, futarchy_info.quote_mint)
-                            } else {
-                                (futarchy_info.quote_mint, futarchy_info.base_mint)
-                            };
+                            let (token_x_vault, token_base_vault, token_mint, base_mint) =
+                                if mint == futarchy_info.base_mint {
+                                    (
+                                        futarchy_info.base_vault,
+                                        futarchy_info.quote_vault,
+                                        futarchy_info.base_mint,
+                                        futarchy_info.quote_mint,
+                                    )
+                                } else if mint == futarchy_info.quote_mint {
+                                    (
+                                        futarchy_info.quote_vault,
+                                        futarchy_info.base_vault,
+                                        futarchy_info.quote_mint,
+                                        futarchy_info.base_mint,
+                                    )
+                                } else {
+                                    warn!(
+                                        "{} is not present in Futarchy pool {}, skipping",
+                                        mint, pool_pubkey
+                                    );
+                                    continue;
+                                };
 
                             pool_data.add_futarchy_pool(
+                                futarchy_event_authority(),
                                 pool_pubkey,
                                 token_x_vault,
-                                token_sol_vault,
+                                token_base_vault,
                                 token_mint,
                                 base_mint,
                             );
