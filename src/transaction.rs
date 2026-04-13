@@ -451,6 +451,9 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new(pair.token_vault, false));
         accounts.push(AccountMeta::new(pair.sol_vault, false));
         accounts.push(AccountMeta::new(pair.oracle, false));
+        if let Some(bitmap_extension) = pair.bin_array_bitmap_extension {
+            accounts.push(AccountMeta::new(bitmap_extension, false));
+        }
         for bin_array in &pair.bin_arrays {
             accounts.push(AccountMeta::new(*bin_array, false));
         }
