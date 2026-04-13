@@ -775,11 +775,26 @@ pub async fn initialize_pool_data(
                                 (amm_info.token_y_mint, amm_info.token_x_mint)
                             };
 
+                            let (bitmap_extension, _) = Pubkey::find_program_address(
+                                &[b"bitmap", pool_pubkey.as_ref()],
+                                &dlmm_program_id(),
+                            );
+                            let bin_array_bitmap_extension =
+                                match rpc_client.get_account(&bitmap_extension) {
+                                    Ok(extension_account)
+                                        if extension_account.owner == dlmm_program_id() =>
+                                    {
+                                        Some(bitmap_extension)
+                                    }
+                                    _ => None,
+                                };
+
                             pool_data.add_dlmm_pool(
                                 pool_pubkey,
                                 token_vault,
                                 sol_vault,
                                 amm_info.oracle,
+                                bin_array_bitmap_extension,
                                 bin_arrays.clone(),
                                 memo_program_id, // memo_program for Token 2022
                                 token_mint,
@@ -792,6 +807,9 @@ pub async fn initialize_pool_data(
                             info!("    Token vault: {}", token_vault);
                             info!("    Sol vault: {}", sol_vault);
                             info!("    Oracle: {}", amm_info.oracle);
+                            if let Some(bitmap_extension) = bin_array_bitmap_extension {
+                                info!("    Bin Array Bitmap Extension: {}", bitmap_extension);
+                            }
                             info!("    Active ID: {}", amm_info.active_id);
 
                             for (i, array) in bin_arrays.iter().enumerate() {

@@ -52,6 +52,7 @@ pub struct DlmmPool {
     pub token_vault: Pubkey,
     pub sol_vault: Pubkey,
     pub oracle: Pubkey,
+    pub bin_array_bitmap_extension: Option<Pubkey>,
     pub bin_arrays: Vec<Pubkey>,
     pub memo_program: Option<Pubkey>, // For Token 2022 support
     pub token_mint: Pubkey,
@@ -300,6 +301,7 @@ impl MintPoolData {
         token_vault: Pubkey,
         sol_vault: Pubkey,
         oracle: Pubkey,
+        bin_array_bitmap_extension: Option<Pubkey>,
         bin_arrays: Vec<Pubkey>,
         memo_program: Option<Pubkey>,
         token_mint: Pubkey,
@@ -310,6 +312,7 @@ impl MintPoolData {
             token_vault,
             sol_vault,
             oracle,
+            bin_array_bitmap_extension,
             bin_arrays,
             memo_program,
             token_mint,
