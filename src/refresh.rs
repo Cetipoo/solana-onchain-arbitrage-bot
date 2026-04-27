@@ -458,21 +458,24 @@ pub async fn initialize_pool_data(
 
                     match PumpAmmInfo::load_checked(&account.data) {
                         Ok(amm_info) => {
-                            let (sol_vault, token_vault) = if sol_mint() == amm_info.base_mint {
+                            let (token_vault, sol_vault) = if mint == amm_info.base_mint {
                                 (
                                     amm_info.pool_base_token_account,
                                     amm_info.pool_quote_token_account,
                                 )
-                            } else if sol_mint() == amm_info.quote_mint {
+                            } else if mint == amm_info.quote_mint {
                                 (
                                     amm_info.pool_quote_token_account,
                                     amm_info.pool_base_token_account,
                                 )
                             } else {
-                                (
-                                    amm_info.pool_quote_token_account,
-                                    amm_info.pool_base_token_account,
-                                )
+                                error!(
+                                    "Pump pool {} does not contain mint {} (base {}, quote {})",
+                                    pool_pubkey, mint, amm_info.base_mint, amm_info.quote_mint
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "Pump pool does not contain configured mint"
+                                ));
                             };
 
                             let (fee_wallet, fee_token_wallet) =
