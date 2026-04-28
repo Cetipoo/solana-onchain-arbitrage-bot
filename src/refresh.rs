@@ -8,9 +8,7 @@ use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
 use crate::dex::pancakeswap::pancakeswap_program_id;
-use crate::dex::pump::{
-    pump_program_id, random_pump_fee_wallet, random_pump_mayhem_fee_wallet, PumpAmmInfo,
-};
+use crate::dex::pump::{pump_fee_wallet, pump_mayhem_fee_wallet, pump_program_id, PumpAmmInfo};
 use crate::dex::raydium::{
     get_initialized_tick_array_pubkeys, parse_bitmap_extension, raydium_clmm_program_id,
     raydium_cp_program_id, raydium_program_id, PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
@@ -460,26 +458,29 @@ pub async fn initialize_pool_data(
 
                     match PumpAmmInfo::load_checked(&account.data) {
                         Ok(amm_info) => {
-                            let (sol_vault, token_vault) = if sol_mint() == amm_info.base_mint {
+                            let (token_vault, sol_vault) = if mint == amm_info.base_mint {
                                 (
                                     amm_info.pool_base_token_account,
                                     amm_info.pool_quote_token_account,
                                 )
-                            } else if sol_mint() == amm_info.quote_mint {
+                            } else if mint == amm_info.quote_mint {
                                 (
                                     amm_info.pool_quote_token_account,
                                     amm_info.pool_base_token_account,
                                 )
                             } else {
-                                (
-                                    amm_info.pool_quote_token_account,
-                                    amm_info.pool_base_token_account,
-                                )
+                                error!(
+                                    "Pump pool {} does not contain mint {} (base {}, quote {})",
+                                    pool_pubkey, mint, amm_info.base_mint, amm_info.quote_mint
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "Pump pool does not contain configured mint"
+                                ));
                             };
 
                             let (fee_wallet, fee_token_wallet) =
                                 if amm_info.is_mayhem_mode {
-                                    let wallet = random_pump_mayhem_fee_wallet();
+                                    let wallet = pump_mayhem_fee_wallet();
                                     (
                                         wallet,
                                         spl_associated_token_account::get_associated_token_address(
@@ -488,7 +489,7 @@ pub async fn initialize_pool_data(
                                         ),
                                     )
                                 } else {
-                                    let wallet = random_pump_fee_wallet();
+                                    let wallet = pump_fee_wallet();
                                     (
                                         wallet,
                                         spl_associated_token_account::get_associated_token_address(
@@ -779,11 +780,26 @@ pub async fn initialize_pool_data(
                                 (amm_info.token_y_mint, amm_info.token_x_mint)
                             };
 
+                            let (bitmap_extension, _) = Pubkey::find_program_address(
+                                &[b"bitmap", pool_pubkey.as_ref()],
+                                &dlmm_program_id(),
+                            );
+                            let bin_array_bitmap_extension =
+                                match rpc_client.get_account(&bitmap_extension) {
+                                    Ok(extension_account)
+                                        if extension_account.owner == dlmm_program_id() =>
+                                    {
+                                        Some(bitmap_extension)
+                                    }
+                                    _ => None,
+                                };
+
                             pool_data.add_dlmm_pool(
                                 pool_pubkey,
                                 token_vault,
                                 sol_vault,
                                 amm_info.oracle,
+                                bin_array_bitmap_extension,
                                 bin_arrays.clone(),
                                 memo_program_id, // memo_program for Token 2022
                                 token_mint,
@@ -796,6 +812,9 @@ pub async fn initialize_pool_data(
                             info!("    Token vault: {}", token_vault);
                             info!("    Sol vault: {}", sol_vault);
                             info!("    Oracle: {}", amm_info.oracle);
+                            if let Some(bitmap_extension) = bin_array_bitmap_extension {
+                                info!("    Bin Array Bitmap Extension: {}", bitmap_extension);
+                            }
                             info!("    Active ID: {}", amm_info.active_id);
 
                             for (i, array) in bin_arrays.iter().enumerate() {

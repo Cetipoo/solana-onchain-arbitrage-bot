@@ -176,7 +176,7 @@ fn push_pump_v2_tail_accounts(
     accounts: &mut Vec<AccountMeta>,
     wallet: &Pubkey,
     x_mint: &Pubkey,
-    program_id: &Pubkey,
+    pump_program_id: &Pubkey,
     pool_base_mint: &Pubkey,
     pool_base_token_program: &Pubkey,
     x_token_program: &Pubkey,
@@ -188,7 +188,7 @@ fn push_pump_v2_tail_accounts(
     if is_cashback_coin {
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
             &[b"user_volume_accumulator", wallet.as_ref()],
-            program_id,
+            pump_program_id,
         );
         let user_volume_accumulator_wsol_ata =
             spl_associated_token_account::get_associated_token_address(
@@ -199,7 +199,7 @@ fn push_pump_v2_tail_accounts(
     }
 
     if *coin_creator != Pubkey::default() {
-        let pool_v2 = derive_pump_pool_v2(x_mint, program_id);
+        let pool_v2 = derive_pump_pool_v2(x_mint, pump_program_id);
         accounts.push(AccountMeta::new_readonly(pool_v2, false));
     }
 
@@ -486,8 +486,7 @@ fn create_swap_instruction(
             pool.coin_creator_vault_authority,
             false,
         ));
-        let pump_program_id =
-            Pubkey::from_str("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA").unwrap();
+        let pump_program_id = pump_program_id();
         let (global_volume_accumulator, _) =
             Pubkey::find_program_address(&[b"global_volume_accumulator"], &pump_program_id);
         let (user_volume_accumulator, _) = Pubkey::find_program_address(
@@ -529,6 +528,9 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new(pair.token_vault, false));
         accounts.push(AccountMeta::new(pair.sol_vault, false));
         accounts.push(AccountMeta::new(pair.oracle, false));
+        if let Some(bitmap_extension) = pair.bin_array_bitmap_extension {
+            accounts.push(AccountMeta::new(bitmap_extension, false));
+        }
         for bin_array in &pair.bin_arrays {
             accounts.push(AccountMeta::new(*bin_array, false));
         }
