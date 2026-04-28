@@ -182,6 +182,7 @@ fn push_pump_v2_tail_accounts(
     x_token_program: &Pubkey,
     fee_wallet: &Pubkey,
     fee_token_wallet: &Pubkey,
+    coin_creator: &Pubkey,
     is_cashback_coin: bool,
 ) {
     if is_cashback_coin {
@@ -197,8 +198,10 @@ fn push_pump_v2_tail_accounts(
         accounts.push(AccountMeta::new(user_volume_accumulator_wsol_ata, false));
     }
 
-    let pool_v2 = derive_pump_pool_v2(x_mint, pump_program_id);
-    accounts.push(AccountMeta::new_readonly(pool_v2, false));
+    if *coin_creator != Pubkey::default() {
+        let pool_v2 = derive_pump_pool_v2(x_mint, pump_program_id);
+        accounts.push(AccountMeta::new_readonly(pool_v2, false));
+    }
 
     let fee_recipient = pump_swap_fee_recipient();
     let fee_recipient_quote_ata = derive_pump_fee_recipient_quote_ata(
@@ -508,6 +511,7 @@ fn create_swap_instruction(
             &mint_pool_data.token_program,
             &pool.fee_wallet,
             &pool.fee_token_wallet,
+            &pool.coin_creator,
             pool.is_cashback_coin,
         );
     }

@@ -520,6 +520,7 @@ pub async fn initialize_pool_data(
                                 fee_token_wallet,
                                 coin_creator_vault_ata,
                                 amm_info.coin_creator_vault_authority,
+                                amm_info.coin_creator,
                                 token_mint,
                                 base_mint,
                                 amm_info.is_mayhem_mode,
@@ -540,6 +541,7 @@ pub async fn initialize_pool_data(
                                 "    Coin creator vault authority: {}",
                                 amm_info.coin_creator_vault_authority
                             );
+                            info!("    Coin creator: {}", amm_info.coin_creator);
                             info!("    Mayhem mode: {}", amm_info.is_mayhem_mode);
                             info!("    Cashback coin: {}", amm_info.is_cashback_coin);
                             info!("    Initialized Pump pool: {}\n", pool_pubkey);
