@@ -25,7 +25,7 @@ use crate::dex::meteora::constants::{
     damm_program_id, damm_v2_event_authority, damm_v2_pool_authority, damm_v2_program_id,
     dlmm_event_authority, dlmm_program_id, vault_program_id,
 };
-use crate::dex::pump::constants::pump_program_id;
+use crate::dex::pump::constants::{pump_program_id, pump_swap_fee_recipient};
 use crate::dex::raydium::constants::{
     raydium_clmm_program_id, raydium_cp_program_id, raydium_program_id,
 };
@@ -136,6 +136,84 @@ pub fn derive_vault_token_account(program_id: &Pubkey, mint: &Pubkey) -> (Pubkey
 /// Helper function to derive the Pump pool-v2 PDA for a given mint
 pub fn derive_pump_pool_v2(mint: &Pubkey, pump_program_id: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"pool-v2", mint.as_ref()], pump_program_id).0
+}
+
+fn is_pump_pool_base_mint_quote(
+    fee_wallet: &Pubkey,
+    fee_token_wallet: &Pubkey,
+    pool_base_mint: &Pubkey,
+) -> bool {
+    let expected_base_fee_wallet_ata =
+        spl_associated_token_account::get_associated_token_address(fee_wallet, pool_base_mint);
+    expected_base_fee_wallet_ata == *fee_token_wallet
+}
+
+fn derive_pump_fee_recipient_quote_ata(
+    fee_wallet: &Pubkey,
+    fee_token_wallet: &Pubkey,
+    pool_base_mint: &Pubkey,
+    pool_base_token_program: &Pubkey,
+    x_mint: &Pubkey,
+    x_token_program: &Pubkey,
+) -> Pubkey {
+    let fee_recipient = pump_swap_fee_recipient();
+    if is_pump_pool_base_mint_quote(fee_wallet, fee_token_wallet, pool_base_mint) {
+        spl_associated_token_account::get_associated_token_address_with_program_id(
+            &fee_recipient,
+            pool_base_mint,
+            pool_base_token_program,
+        )
+    } else {
+        spl_associated_token_account::get_associated_token_address_with_program_id(
+            &fee_recipient,
+            x_mint,
+            x_token_program,
+        )
+    }
+}
+
+fn push_pump_v2_tail_accounts(
+    accounts: &mut Vec<AccountMeta>,
+    wallet: &Pubkey,
+    x_mint: &Pubkey,
+    program_id: &Pubkey,
+    pool_base_mint: &Pubkey,
+    pool_base_token_program: &Pubkey,
+    x_token_program: &Pubkey,
+    fee_wallet: &Pubkey,
+    fee_token_wallet: &Pubkey,
+    coin_creator: &Pubkey,
+    is_cashback_coin: bool,
+) {
+    if is_cashback_coin {
+        let (user_volume_accumulator, _) = Pubkey::find_program_address(
+            &[b"user_volume_accumulator", wallet.as_ref()],
+            program_id,
+        );
+        let user_volume_accumulator_wsol_ata =
+            spl_associated_token_account::get_associated_token_address(
+                &user_volume_accumulator,
+                &sol_mint(),
+            );
+        accounts.push(AccountMeta::new(user_volume_accumulator_wsol_ata, false));
+    }
+
+    if *coin_creator != Pubkey::default() {
+        let pool_v2 = derive_pump_pool_v2(x_mint, program_id);
+        accounts.push(AccountMeta::new_readonly(pool_v2, false));
+    }
+
+    let fee_recipient = pump_swap_fee_recipient();
+    let fee_recipient_quote_ata = derive_pump_fee_recipient_quote_ata(
+        fee_wallet,
+        fee_token_wallet,
+        pool_base_mint,
+        pool_base_token_program,
+        x_mint,
+        x_token_program,
+    );
+    accounts.push(AccountMeta::new_readonly(fee_recipient, false));
+    accounts.push(AccountMeta::new(fee_recipient_quote_ata, false));
 }
 
 // See https://docs.solanamevbot.com/home/onchain-bot/onchain-program for more information
@@ -424,19 +502,19 @@ fn create_swap_instruction(
         accounts.push(AccountMeta::new_readonly(fee_config, false));
         accounts.push(AccountMeta::new_readonly(pump_fee_program_id, false));
 
-        // Pump AMM v2 cashback-tail accounts
-        if pool.is_cashback_coin {
-            let user_volume_accumulator_wsol_ata =
-                spl_associated_token_account::get_associated_token_address(
-                    &user_volume_accumulator,
-                    &sol_mint_pubkey,
-                );
-            accounts.push(AccountMeta::new(user_volume_accumulator_wsol_ata, false));
-        }
-
-        // Pump AMM v2 pool PDA
-        let pool_v2 = derive_pump_pool_v2(&mint_pool_data.mint, &pump_program_id);
-        accounts.push(AccountMeta::new_readonly(pool_v2, false));
+        push_pump_v2_tail_accounts(
+            &mut accounts,
+            &wallet,
+            &mint_pool_data.mint,
+            &pump_program_id,
+            &pool.base_mint,
+            &token_program_id,
+            &mint_pool_data.token_program,
+            &pool.fee_wallet,
+            &pool.fee_token_wallet,
+            &pool.coin_creator,
+            pool.is_cashback_coin,
+        );
     }
 
     // Add DLMM pairs

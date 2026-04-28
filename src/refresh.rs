@@ -8,7 +8,9 @@ use crate::dex::meteora::constants::{damm_program_id, damm_v2_program_id};
 use crate::dex::meteora::dammv2_info::MeteoraDAmmV2Info;
 use crate::dex::meteora::{constants::dlmm_program_id, dlmm_info::DlmmInfo};
 use crate::dex::pancakeswap::pancakeswap_program_id;
-use crate::dex::pump::{pump_fee_wallet, pump_mayhem_fee_wallet, pump_program_id, PumpAmmInfo};
+use crate::dex::pump::{
+    pump_program_id, random_pump_fee_wallet, random_pump_mayhem_fee_wallet, PumpAmmInfo,
+};
 use crate::dex::raydium::{
     get_initialized_tick_array_pubkeys, parse_bitmap_extension, raydium_clmm_program_id,
     raydium_cp_program_id, raydium_program_id, PoolState, RaydiumAmmInfo, RaydiumCpAmmInfo,
@@ -477,7 +479,7 @@ pub async fn initialize_pool_data(
 
                             let (fee_wallet, fee_token_wallet) =
                                 if amm_info.is_mayhem_mode {
-                                    let wallet = pump_mayhem_fee_wallet();
+                                    let wallet = random_pump_mayhem_fee_wallet();
                                     (
                                         wallet,
                                         spl_associated_token_account::get_associated_token_address(
@@ -486,7 +488,7 @@ pub async fn initialize_pool_data(
                                         ),
                                     )
                                 } else {
-                                    let wallet = pump_fee_wallet();
+                                    let wallet = random_pump_fee_wallet();
                                     (
                                         wallet,
                                         spl_associated_token_account::get_associated_token_address(
@@ -517,6 +519,7 @@ pub async fn initialize_pool_data(
                                 fee_token_wallet,
                                 coin_creator_vault_ata,
                                 amm_info.coin_creator_vault_authority,
+                                amm_info.coin_creator,
                                 token_mint,
                                 base_mint,
                                 amm_info.is_mayhem_mode,
@@ -537,6 +540,7 @@ pub async fn initialize_pool_data(
                                 "    Coin creator vault authority: {}",
                                 amm_info.coin_creator_vault_authority
                             );
+                            info!("    Coin creator: {}", amm_info.coin_creator);
                             info!("    Mayhem mode: {}", amm_info.is_mayhem_mode);
                             info!("    Cashback coin: {}", amm_info.is_cashback_coin);
                             info!("    Initialized Pump pool: {}\n", pool_pubkey);
