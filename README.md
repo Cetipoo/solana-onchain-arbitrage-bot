@@ -15,6 +15,7 @@ This repository focuses on **pool parsing and program interaction**, and is inte
 - This repo is a **demo / reference implementation**
 - It shows **how to parse pools and call the on-chain program**
 - It is **not optimized**, **not fully automated**, and **not recommended for beginners**
+- Every transaction pays network fees even when it finds no profit and fails. Each `[[transactions]]` entry sends one every `process_delay_ms`, so the example config, with five entries every 400 ms, pays about 5 SOL a day in base fees alone. Start with one transaction and a longer delay
 
 ### ✅ Recommended for new users
 
@@ -40,20 +41,16 @@ Use the **full featured production bot** instead:
 - **Program ID**  
   https://solscan.io/account/MEViEnscUm6tsQRoGd9h6nLQaQspKj7DB2M5FwM3Xvz
 
-- **Example transaction**  
-  https://solscan.io/tx/2JtgbXAgwPib9L5Ruc5vLhQ5qeX5EMhVDQbcCaAYVJKpEFn22ArEqXhipu5fFyhrEwosiHWzRUhWispJUCYyAnKT
-
 ---
 
 ## ✨ Features (Demo Scope)
 
-- Load configuration from a TOML config file
-- Automatically create ATAs if missing
-- Send transactions through multiple RPC endpoints (spam mode)
-- Built-in flashloan integration
-- Parse multiple Solana AMM pool types
-- Auto-detect DEX type by account owner
-- Group pools by mint for arbitrage routing
+- Build the on-chain program's V10 instruction for every route shape it trades: 2-, 3- and 4-hop routes, several per transaction
+- Expose every instruction option: settlement mint, flashloan, minimum profit, fixed trade size, no-failure mode, constant-rate conversion, additional fee
+- Infer every mint from the pools and check each pool's role at startup
+- Size the compute unit limit from the pools in each transaction
+- Send v1 transactions (SIMD-0385, up to 64 accounts, no lookup tables) through one or more RPC endpoints
+- Create the wallet's WSOL and USDC token accounts if missing
 
 ---
 
@@ -67,12 +64,9 @@ Use the **full featured production bot** instead:
 - Meteora Dynamic AMM
 - Meteora DAMM V2
 - Orca Whirlpool
-- Vertigo
-- Heaven
-- Futarchy
-- Humidifi
 - PancakeSwap
 - Byreal
+- Manifest
 
 ---
 
@@ -80,7 +74,7 @@ Use the **full featured production bot** instead:
 
 ### Prerequisites
 
-- Rust & Cargo
+- Rust 1.97.1 or newer, with Cargo
 - A Solana wallet funded with SOL
 - One or more Solana RPC endpoints
 
@@ -104,48 +98,62 @@ Use the **full featured production bot** instead:
 
 ### Configuration
 
-1. Copy the example configuration file:
-   ```
-   cp config.toml.example config.toml
-   ```
-2. Edit `config.toml` and configure your:
-   - Private key for your Solana wallet
-   - RPC endpoint URL(s)
-3. Add pool addresses to the `markets` list:
-   - DEX type is auto-detected by account owner (no need to specify pool type)
-   - Pools are automatically grouped by mint for arbitrage routing
-   - Optionally add lookup table accounts for transaction optimization
+Copy the example and edit it:
+
+```
+cp config.toml.example config.toml
+```
+
+Every address is a pool; the bot reads each pool's DEX from its owner and its mints from its state, so no pool types or mints are configured.
+
+## Routes
+
+Each `[[transactions]]` entry is one V10 instruction. It settles in SOL or USDC, and holds up to 4 groups: all direct groups or all triangle groups, since the program cannot mix them in one instruction. The program picks the most profitable route across the groups, sizes the trade and executes it, or fails with `NoProfit`.
+
+| Route | Group | Hops |
+|---|---|---|
+| settlement → token → settlement | `direct`, all pools quoted in the settlement mint | 2 |
+| settlement → token → other → settlement | `direct` with pools quoted in the other of SOL/USDC | 3 |
+| settlement → token → stock → settlement | `triangle` with bridges quoted in the settlement mint | 3 |
+| settlement → token → stock → other → settlement | `triangle` with bridges quoted in the other of SOL/USDC | 4 |
+
+"Other → settlement" always goes through the Raydium SOL/USDC pool (`58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2`); the bot adds it when a route needs it.
+
+- **Direct group** (`pools`): two or more pools trading one token against SOL or USDC, at least one quoted in the settlement mint.
+- **Triangle group**:
+  - `intermediate`: trades the token against a second token, the stock.
+  - `bridges`: trade the stock against SOL or USDC. Every triangle in a transaction uses the same quote mint. Raydium CPMM and Meteora DAMM v2 cannot be bridges.
+  - `direct`: trade the token against the settlement mint.
+
+A transaction may hold at most 16 pools, including the conversion, and must fit a v1 transaction (64 accounts, 4096 bytes); the bot reports an oversized transaction instead of sending it. Pool state is reloaded every 5 seconds. A pool that cannot be traded at that moment, such as a full Manifest market, is left out until the next reload.
 
 ## Configuration Options
 
-### Bot Configuration (`[bot]`)
+### `[rpc]`
 
-- `compute_unit_limit`: Maximum compute unit limit per transaction
+- `url`: RPC used to read chain state (`$NAME` reads the environment variable `NAME`)
+- `send_urls`: RPCs that transactions are sent to; `url` when omitted
 
-### Routing Configuration (`[routing.markets]`)
+### `[wallet]`
 
-- `markets`: List of pool/market addresses (DEX type is auto-detected by account owner)
-- `lookup_table_accounts`: List of lookup table accounts (optional, shared across all pools)
-- `process_delay`: Delay between processing cycles in milliseconds
+- `private_key`: base58 keypair or keypair file path (`$NAME` reads the environment variable `NAME`)
 
-### RPC Configuration (`[rpc]`)
+### `[bot]` (optional)
 
-- `url`: RPC URL for the Solana network (supports environment variables with `$VAR_NAME`)
+- `process_delay_ms`: delay between sends of each transaction (default 400)
+- `compute_unit_price`: priority fee in microlamports per compute unit (default 1000)
+- `max_retries`: retries each RPC makes for each send (default 3)
 
-### Spam Configuration (`[spam]`)
+### `[[transactions]]`
 
-- `enabled`: Enable spam transactions (send through multiple RPC endpoints)
-- `sending_rpc_urls`: List of RPC URLs for sending transactions
-- `compute_unit_price`: Fixed compute unit price in microlamports
-- `max_retries`: Maximum retries for transaction sending
-
-### Wallet Configuration (`[wallet]`)
-
-- `private_key`: Private key - can be base58 string, file path, or environment variable (`$VAR_NAME`)
-
-### Flashloan Configuration (`[flashloan]`)
-
-- `enabled`: Enable flashloan integration
+- `settlement`: `"SOL"` or `"USDC"`
+- `flashloan`: borrow the trade from the program's vault instead of the wallet (default false)
+- `minimum_profit`: profit, in settlement-mint base units, below which the trade fails (default 0)
+- `trade_size`: fixed input in settlement-mint base units; 0 lets the program find the best size (default 0)
+- `no_failure`: succeed without trading when there is no profit, instead of failing (default false)
+- `constant_conversion`: price the SOL/USDC conversion at its quoted rate instead of walking its curve, which costs fewer compute units (default false)
+- `additional_fee`: `{ bps, collector }`, a share of the profit above `minimum_profit` paid to `collector`, a settlement-mint token account (at most 8500 bps)
+- `[[transactions.direct]]` or `[[transactions.triangle]]`: the groups, described above
 
 ## License
 

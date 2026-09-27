@@ -1,229 +1,154 @@
-use crate::ata::ensure_base_atas_exist;
+use crate::ata::create_missing_settlement_atas;
 use crate::config::Config;
-use crate::pool_refreshers::PoolDataRefresher;
-use crate::refresh::initialize_pools_from_markets;
-use crate::transaction::build_and_send_transaction;
-use anyhow::Context;
+use crate::loader::AccountLoader;
+use crate::route::{Basket, Route};
+use crate::transaction::{build_transaction, send_transaction};
+use anyhow::{Context, Result};
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::address_lookup_table::state::AddressLookupTable;
-use solana_sdk::address_lookup_table::AddressLookupTableAccount;
 use solana_sdk::hash::Hash;
-use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::RwLock;
+use std::thread;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-pub async fn run_bot(config_path: &str) -> anyhow::Result<()> {
+const BLOCKHASH_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+/// How often pool state (vaults, tick/bin arrays, Pump fee recipient) is reloaded.
+const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+pub fn run_bot(config_path: &str) -> Result<()> {
     let config = Config::load(config_path)?;
-    info!("Configuration loaded successfully");
-
-    let rpc_client = Arc::new(RpcClient::new(config.rpc.url.clone()));
-
-    let sending_rpc_clients = if let Some(spam_config) = &config.spam {
-        if spam_config.enabled {
-            spam_config
-                .sending_rpc_urls
-                .iter()
-                .map(|url| Arc::new(RpcClient::new(url.clone())))
-                .collect::<Vec<_>>()
-        } else {
-            vec![rpc_client.clone()]
-        }
-    } else {
-        vec![rpc_client.clone()]
-    };
-
-    let wallet_kp =
-        load_keypair(&config.wallet.private_key).context("Failed to load wallet keypair")?;
-    info!("Wallet loaded: {}", wallet_kp.pubkey());
-
-    let initial_blockhash = rpc_client.get_latest_blockhash()?;
-    let cached_blockhash = Arc::new(Mutex::new(initial_blockhash));
-
-    let refresh_interval = Duration::from_secs(10);
-    let blockhash_client = rpc_client.clone();
-    let blockhash_cache = cached_blockhash.clone();
-    tokio::spawn(async move {
-        blockhash_refresher(blockhash_client, blockhash_cache, refresh_interval).await;
-    });
-
-    // Initialize pools from markets config (auto-detect DEX types and group by mint)
-    let mint_pool_data_map = initialize_pools_from_markets(
-        &config.routing.markets,
-        &wallet_kp.pubkey(),
-        rpc_client.clone(),
-    )
-    .await?;
-
-    info!("Initialized {} mints from markets config", mint_pool_data_map.len());
-
-    // Ensure base token ATAs (WSOL, USDC, USD1) exist
-    // Route token ATAs are NOT created here - the on-chain program creates them as needed
-    ensure_base_atas_exist(&rpc_client, &wallet_kp)?;
-
-    // Load lookup tables (global config)
-    let mut lookup_table_addresses = config.routing.markets.lookup_table_accounts.clone().unwrap_or_default();
-    lookup_table_addresses.push("4sKLJ1Qoudh8PJyqBeuKocYdsZvxTcRShUt9aKqwhgvC".to_string());
-
-    let mut lookup_table_accounts_list = vec![];
-    for lookup_table_account in &lookup_table_addresses {
-        match Pubkey::from_str(lookup_table_account) {
-            Ok(pubkey) => {
-                match rpc_client.get_account(&pubkey) {
-                    Ok(account) => {
-                        match AddressLookupTable::deserialize(&account.data) {
-                            Ok(lookup_table) => {
-                                let lookup_table_account = AddressLookupTableAccount {
-                                    key: pubkey,
-                                    addresses: lookup_table.addresses.into_owned(),
-                                };
-                                lookup_table_accounts_list.push(lookup_table_account);
-                                info!("   Successfully loaded lookup table: {}", pubkey);
-                            }
-                            Err(e) => {
-                                error!("   Failed to deserialize lookup table {}: {}", pubkey, e);
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("   Failed to fetch lookup table account {}: {}", pubkey, e);
-                        continue;
-                    }
-                }
-            }
-            Err(e) => {
-                error!("   Invalid lookup table pubkey string {}: {}", lookup_table_account, e);
-                continue;
-            }
-        }
-    }
-
-    if lookup_table_accounts_list.is_empty() {
-        warn!("   Warning: No valid lookup tables were loaded");
-    } else {
-        info!("   Loaded {} lookup tables successfully", lookup_table_accounts_list.len());
-    }
-
-    let lookup_table_accounts_list = Arc::new(lookup_table_accounts_list);
-    let process_delay = Duration::from_millis(config.routing.markets.process_delay);
-    let pool_refresh_interval = Duration::from_secs(5);
-
-    // Spawn processing task for each mint
-    for (mint, pool_data) in mint_pool_data_map {
-        info!("Starting processing for mint: {}", mint);
-
-        let mint_pool_data = Arc::new(Mutex::new(pool_data));
-        let config_clone = config.clone();
-        let sending_rpc_clients_clone = sending_rpc_clients.clone();
-        let cached_blockhash_clone = cached_blockhash.clone();
-        let wallet_bytes = wallet_kp.to_bytes();
-        let wallet_kp_clone = Keypair::from_bytes(&wallet_bytes).unwrap();
-        let lookup_tables = lookup_table_accounts_list.clone();
-        let mint_str = mint.to_string();
-        let rpc_client_clone = rpc_client.clone();
-
-        tokio::spawn(async move {
-            // Pool refresher for CLMM pools (DLMM, Whirlpool, Raydium CLMM, PancakeSwap, Byreal)
-            let pool_refresher = PoolDataRefresher::new();
-            let mut last_pool_refresh = Instant::now()
-                .checked_sub(pool_refresh_interval)
-                .unwrap_or_else(Instant::now);
-
-            loop {
-                // Check if pool refresh is needed (every 5 seconds)
-                let now = Instant::now();
-                if now.duration_since(last_pool_refresh) >= pool_refresh_interval {
-                    let mut guard = mint_pool_data.lock().await;
-                    match pool_refresher.refresh_all_pools(&mut guard, &rpc_client_clone, false) {
-                        Ok(_) => {
-                            last_pool_refresh = now;
-                            info!("Pool data refreshed for mint {}", mint_str);
-                        }
-                        Err(e) => {
-                            error!("Failed to refresh pool data for mint {}: {}", mint_str, e);
-                        }
-                    }
-                    drop(guard);
-                }
-
-                let latest_blockhash = {
-                    let guard = cached_blockhash_clone.lock().await;
-                    *guard
-                };
-
-                let guard = mint_pool_data.lock().await;
-
-                match build_and_send_transaction(
-                    &wallet_kp_clone,
-                    &config_clone,
-                    &*guard,
-                    &sending_rpc_clients_clone,
-                    latest_blockhash,
-                    &lookup_tables,
-                )
-                .await
-                {
-                    Ok(signatures) => {
-                        info!("Transactions sent successfully for mint {}", mint_str);
-                        for signature in signatures {
-                            info!("  Signature: {}", signature);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error sending transaction for mint {}: {}", mint_str, e);
-                    }
-                }
-
-                drop(guard);
-                tokio::time::sleep(process_delay).await;
-            }
-        });
-    }
-
-    loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-async fn blockhash_refresher(
-    rpc_client: Arc<RpcClient>,
-    cached_blockhash: Arc<Mutex<Hash>>,
-    refresh_interval: Duration,
-) {
-    loop {
-        match rpc_client.get_latest_blockhash() {
-            Ok(blockhash) => {
-                let mut guard = cached_blockhash.lock().await;
-                *guard = blockhash;
-                info!("Blockhash refreshed: {}", blockhash);
-            }
-            Err(e) => {
-                error!("Failed to refresh blockhash: {:?}", e);
-            }
-        }
-        tokio::time::sleep(refresh_interval).await;
-    }
-}
-
-fn load_keypair(private_key: &str) -> anyhow::Result<Keypair> {
-    if let Ok(keypair) = bs58::decode(private_key)
-        .into_vec()
-        .map_err(|e| anyhow::anyhow!("Failed to decode base58: {}", e))
-        .and_then(|bytes| {
-            Keypair::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("Invalid keypair bytes: {}", e))
+    let bot = Bot::new(&config)?;
+    let mut loader = AccountLoader::new(&bot.rpc);
+    let routes = config
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(i, transaction)| {
+            Route::resolve(i + 1, transaction, &mut loader)
+                .with_context(|| format!("transaction #{}", i + 1))
         })
-    {
-        return Ok(keypair);
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(!routes.is_empty(), "No transactions configured");
+
+    // The on-chain program creates target token ATAs as needed.
+    create_missing_settlement_atas(&bot.rpc, &bot.wallet)?;
+
+    thread::scope(|scope| {
+        scope.spawn(|| bot.refresh_blockhash());
+        for route in &routes {
+            info!("Starting {route} for targets {:?}", route.targets());
+            scope.spawn(|| bot.trade(route));
+        }
+    });
+    Ok(())
+}
+
+/// What every transaction's loop shares: clients, wallet, the latest
+/// blockhash and the sending settings.
+struct Bot {
+    rpc: RpcClient,
+    senders: Vec<RpcClient>,
+    wallet: Keypair,
+    blockhash: RwLock<Hash>,
+    compute_unit_price: u64,
+    max_retries: usize,
+    process_delay: Duration,
+}
+
+impl Bot {
+    fn new(config: &Config) -> Result<Self> {
+        let rpc = RpcClient::new(config.rpc.url.clone());
+        let send_urls = match config.rpc.send_urls.as_slice() {
+            [] => vec![config.rpc.url.clone()],
+            urls => urls.to_vec(),
+        };
+        let wallet =
+            load_keypair(&config.wallet.private_key).context("Failed to load wallet keypair")?;
+        info!("Wallet loaded: {}", wallet.pubkey());
+        Ok(Self {
+            blockhash: RwLock::new(rpc.get_latest_blockhash()?),
+            rpc,
+            senders: send_urls.into_iter().map(RpcClient::new).collect(),
+            wallet,
+            compute_unit_price: config.bot.compute_unit_price,
+            max_retries: config.bot.max_retries,
+            process_delay: Duration::from_millis(config.bot.process_delay_ms),
+        })
     }
 
-    if let Ok(keypair) = solana_sdk::signature::read_keypair_file(private_key) {
-        return Ok(keypair);
+    fn refresh_blockhash(&self) {
+        loop {
+            thread::sleep(BLOCKHASH_REFRESH_INTERVAL);
+            match self.rpc.get_latest_blockhash() {
+                Ok(latest) => {
+                    *self.blockhash.write().unwrap() = latest;
+                    info!("Blockhash refreshed: {}", latest);
+                }
+                Err(e) => error!("Failed to refresh blockhash: {:?}", e),
+            }
+        }
     }
 
-    anyhow::bail!("Failed to load keypair from: {}", private_key)
+    fn trade(&self, route: &Route) {
+        let mut basket = None;
+        let mut next_refresh = Instant::now();
+        loop {
+            if Instant::now() >= next_refresh {
+                // A failed reload keeps trading the last loaded pools.
+                basket = self.load(route).or(basket);
+                next_refresh = Instant::now() + POOL_REFRESH_INTERVAL;
+            }
+            if let Some(basket) = &basket {
+                self.send(route, basket);
+            }
+            thread::sleep(self.process_delay);
+        }
+    }
+
+    fn load(&self, route: &Route) -> Option<Basket> {
+        match route.load(&mut AccountLoader::new(&self.rpc), self.wallet.pubkey()) {
+            Ok(basket) => {
+                info!(
+                    "Pool data refreshed for {route}: {} pools settled in {}",
+                    basket.pool_count(),
+                    basket.settlement()
+                );
+                Some(basket)
+            }
+            Err(e) => {
+                error!("Failed to refresh pool data for {route}: {e:#}");
+                None
+            }
+        }
+    }
+
+    fn send(&self, route: &Route, basket: &Basket) {
+        let blockhash = *self.blockhash.read().unwrap();
+        match build_transaction(&self.wallet, basket, self.compute_unit_price, blockhash) {
+            Ok(tx) => {
+                let accepted = send_transaction(&self.senders, &tx, self.max_retries);
+                info!(
+                    "{route}: transaction {} accepted by {accepted}/{} RPCs",
+                    tx.signatures[0],
+                    self.senders.len()
+                );
+            }
+            Err(e) => error!("Error building {route}: {e:#}"),
+        }
+    }
+}
+
+/// A base58 keypair, or the path of a keypair file. The value may be the
+/// secret itself, so errors never echo it.
+fn load_keypair(private_key: &str) -> Result<Keypair> {
+    if let Ok(keypair) = Keypair::try_from_base58_string(private_key) {
+        return Ok(keypair);
+    }
+    solana_sdk::signature::read_keypair_file(private_key).map_err(|_| {
+        anyhow::anyhow!(
+            "wallet.private_key is neither a base58 keypair nor a readable keypair file"
+        )
+    })
 }

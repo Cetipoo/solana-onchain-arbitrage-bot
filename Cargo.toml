@@ -2,50 +2,28 @@
 name = "solana-onchain-arbitrage-bot"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.97.1"
 description = "A simple Solana onchain arbitrage bot"
-repository = "https://github.com/cetipo/solana-onchain-arbitrage-bot"
+repository = "https://github.com/Cetipoo/solana-onchain-arbitrage-bot"
 license = "MIT"
+
+[workspace]
+members = [".", "lib/executor-v10-abi"]
 
 [lib]
 name = "solana_onchain_arbitrage_bot"
 path = "src/lib.rs"
 
 [dependencies]
-# Core Solana dependencies
-solana-sdk = "1.17"
-solana-client = "1.17"
-solana-program = "1.17"
-solana-account-decoder = "1.17"
-solana-transaction-status = "1.17"
-
-# SPL token support
-spl-token = { version = "4.0.0", features = ["no-entrypoint"] }
-spl-associated-token-account = { version = "1.0.5", features = [
-    "no-entrypoint",
-] }
-
-# Serialization/deserialization
+executor-v10-abi = { path = "lib/executor-v10-abi" }
+solana-sdk = "4.1"
+solana-client = "4.3"
+solana-commitment-config = "3"
+spl-associated-token-account-interface = "2"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
-
-# Async runtime
-tokio = { version = "1.32", features = ["full"] }
-futures = "0.3"
-
-# Utilities
 anyhow = "1.0"
-thiserror = "1.0"
 rand = "0.8"
-bs58 = "0.4"
-borsh = "0.10.3"
-bytemuck = { version = "1.16.1", features = ["derive"] }
-
-# Command line argument parsing
-clap = "3.2"
-
-# Logging
+clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-meteora-damm-cpi = { path = "lib/meteora-damm", features = ["no-entrypoint"] }
-meteora-vault-cpi = { path = "lib/meteora-vault", features = ["no-entrypoint"] }
+tracing-subscriber = "0.3"

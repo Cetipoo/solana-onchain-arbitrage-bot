@@ -1,43 +1,79 @@
-# Example configuration file for simplified onchain bot
-
-[bot]
-# Max compute unit limit per transaction
-compute_unit_limit = 600000
-
-[routing.markets]
-# List of pool/market addresses - DEX type is auto-detected by checking account owner
-markets = [
-    "Gf7sXMoP8iRw4iiXmJ1nq4vxcRycbGXy5RL8a8LnTd3v",   # Pump pool
-    "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",  # Raydium V4 pool
-    "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",   # Meteora DLMM pool
-    "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",  # Whirlpool
-    "3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv",  # Raydium CLMM pool
-]
-# Lookup tables (shared across all pools)
-lookup_table_accounts = ["8HvgxVyd22Jq9mmoojm4Awqw6sbymbF5pwLr8FtvySHs"]
-# Delay between processing cycles (ms)
-process_delay = 400
-
 [rpc]
-# RPC URL for the Solana network
+# Reads chain state. `$NAME` reads the environment variable NAME.
 url = "https://api.mainnet-beta.solana.com"
-
-[spam]
-# Enable spam transactions
-enabled = true
-# List of RPC URLs to use for sending transactions
-sending_rpc_urls = [
-  "https://api.mainnet-beta.solana.com",
-]
-# Fixed compute unit price
-compute_unit_price = 1000
-# Maximum retries
-max_retries = 3
+# Where transactions are sent; `url` when omitted.
+send_urls = ["https://api.mainnet-beta.solana.com"]
 
 [wallet]
-# Private key (can be path or environment variable)
-private_key = ""
+# Base58 keypair or keypair file path. `$NAME` reads the environment variable NAME.
+private_key = "$PRIVATE_KEY"
 
-[flashloan]
-# Enable flashloan
-enabled = true
+[bot]
+# Delay between sends of each transaction (ms)
+process_delay_ms = 400
+# Priority fee (microlamports per compute unit)
+compute_unit_price = 1000
+# Retries each RPC makes for each send
+max_retries = 3
+
+# Each [[transactions]] entry is one V10 instruction, reloaded from chain state
+# every 5 seconds and sent every process_delay_ms. It holds up to 4 groups, all
+# direct or all triangle. See the README for every option.
+
+# 2 hops: SOL -> CniPCE -> SOL, across three SOL-quoted pools.
+[[transactions]]
+settlement = "SOL"
+# Instruction options, shown with their defaults:
+# flashloan = false
+# minimum_profit = 0           # settlement-mint base units
+# trade_size = 0               # 0 lets the program find the best size
+# no_failure = false
+# constant_conversion = false
+# additional_fee = { bps = 50, collector = "<settlement-mint token account>" }
+[[transactions.direct]]
+pools = [
+    "2Up56xj83ZQ3AMpaWensRDDnVsjy6EQUEZZNaFXo9Ef8", # Pump AMM CniPCE/SOL
+    "9fmdkQipJK2teeUv53BMDXi52uRLbrEvV38K8GBNkiM7", # Raydium V4 CniPCE/SOL
+    "HHGmKEA16biEg9HQvkMRnF5wVzADcFaUwaz1xZU3PJ3d", # Meteora DLMM CniPCE/SOL
+]
+
+# 3 hops: SOL -> CniPCE -> USDC -> SOL through the Raydium SOL/USDC pool,
+# with the trade borrowed from the program's vault.
+[[transactions]]
+settlement = "SOL"
+flashloan = true
+[[transactions.direct]]
+pools = [
+    "HHGmKEA16biEg9HQvkMRnF5wVzADcFaUwaz1xZU3PJ3d", # Meteora DLMM CniPCE/SOL
+    "3b5PwFg3ML2fF1h9zLqZrKozW3sPof3v5XX1UFvfpu28", # Meteora DLMM CniPCE/USDC
+]
+
+# Two tokens in one transaction: the program trades whichever is profitable.
+[[transactions]]
+settlement = "SOL"
+[[transactions.direct]]
+pools = [
+    "3WQ1emYavxm3vPiGqPQYFLam62NhuFiXMEaoU9Q5Vqv5", # Raydium V4 hV7MQ/SOL
+    "6kYRiHqLaRB8qLS6X7ShEXqCViidghc8xcMibkHJeZpw", # Meteora DLMM hV7MQ/SOL
+]
+[[transactions.direct]]
+pools = [
+    "6F3B3oHfZDQwhjcyoey1kzZJMgoKWPDy5PR23cjYXbYZ", # Manifest JUP/SOL
+    "go9WHmcxro3bV23iuXiAAFq7eFkTBDgdYDDqdTiwFoo", # Manifest JUP/USDC
+]
+
+# 3 hops: SOL -> JUP -> USDT -> SOL.
+[[transactions]]
+settlement = "SOL"
+[[transactions.triangle]]
+intermediate = "DcM51yhj5e7AdMFV2xuejmpnMwWmSQVps7FVnMbcikiZ" # Raydium CLMM JUP/USDT
+bridges = ["7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX"]    # Raydium V4 USDT/SOL
+direct = ["EYErUp5muPYEEkeaUCY22JibeZX7E9UuMcJFZkmNAN7c"]       # Raydium V4 JUP/SOL
+
+# 4 hops: SOL -> JUP -> USDT -> USDC -> SOL through the Raydium SOL/USDC pool.
+[[transactions]]
+settlement = "SOL"
+[[transactions.triangle]]
+intermediate = "DcM51yhj5e7AdMFV2xuejmpnMwWmSQVps7FVnMbcikiZ" # Raydium CLMM JUP/USDT
+bridges = ["7TbGqz32RsuwXbXY7EyBCiAnMbJq1gm1wKmfjQjuwoyF"]    # Raydium V4 USDT/USDC
+direct = ["EYErUp5muPYEEkeaUCY22JibeZX7E9UuMcJFZkmNAN7c"]       # Raydium V4 JUP/SOL
