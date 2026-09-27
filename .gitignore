@@ -1,5 +1,7 @@
 /target
 **/*.rs.bk
-Cargo.lock
 .env
 config.toml
+.DS_Store
+# Keypair files
+*.json
