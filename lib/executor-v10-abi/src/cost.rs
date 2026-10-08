@@ -325,8 +325,8 @@ pub fn route_work(legs: &[Venue]) -> RouteWork {
 /// its crossings, at the measured cost of a crossing. On a two-leg route the
 /// DLMM allowance funds about ten bins beside a product pool, which keeps
 /// the captured trades' profit within a tenth of a percent of the previous
-/// requests; it grew by ten bins' share of the
-/// crossing reserve's rise from 5,600 to 6,800, so the same walk still fits.
+/// requests; it grew by ten bins' share of the crossing reserve's rise from
+/// 5,600 to 6,800, so the same walk still fits.
 /// Concentrated and order-book allowances fund eight to ten ticks and about
 /// twenty levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,7 +460,7 @@ fn candidate_cu(legs: &[Leg]) -> u32 {
 pub struct BasketPool {
     pub venue: Venue,
     /// Quoted in the settlement mint. Otherwise the route converts through
-    /// the Raydium AMM SOL/USDC pool.
+    /// the transaction's SOL/USDC converter.
     pub settlement_quoted: bool,
     /// Pump's native quote mint is this pool's route base mint. `None`
     /// preserves the buy reserve when native orientation is unavailable.
