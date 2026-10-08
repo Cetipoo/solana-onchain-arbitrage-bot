@@ -61,7 +61,7 @@ fn message(
     // A random margin makes each transaction unique, so resends under one
     // blockhash are not deduplicated.
     let limit = basket
-        .executor_cu()?
+        .executor_cu()
         .saturating_add(EXECUTOR_CU_MARGIN + rand::random::<u32>() % 1000)
         .min(MAX_COMPUTE_UNIT_LIMIT);
     Ok(v1::Message::try_compile_with_config(

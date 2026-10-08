@@ -6,7 +6,7 @@ use crate::v10::{
     self as abi, ConversionAccounts, DirectGroup, MarketGroup, MintAccounts, PoolAccounts,
 };
 use anyhow::{bail, ensure, Context, Result};
-use executor_v10_abi::cost::{transaction_cu, BasketGroup, BasketPool};
+use executor_v10_abi::cost::{transaction_cu, BasketGroup, BasketPool, DEFAULT_CONVERTER};
 use executor_v10_abi::MAX_GROUPS;
 use solana_sdk::{instruction::Instruction, pubkey, pubkey::Pubkey};
 use std::fmt;
@@ -339,13 +339,6 @@ impl Triangle {
             is_quote(&quote),
             "bridges must trade {stock} against SOL or USDC"
         );
-        for &bridge in &config.bridges {
-            let program = loader.get(bridge)?.owner;
-            ensure!(
-                ![abi::CPMM, abi::DAMMV2].contains(&program),
-                "bridge {bridge}: Raydium CPMM and Meteora DAMM v2 cannot be bridges"
-            );
-        }
         Ok(Self {
             target,
             stock,
@@ -466,28 +459,25 @@ impl Basket {
     }
 
     /// CU the executor needs for whichever route the basket allows.
-    pub fn executor_cu(&self) -> Result<u32> {
+    pub fn executor_cu(&self) -> u32 {
         // Only a pool quoted in the conversion's mint crosses settlements; a
         // triangle's intermediate trades the target against the stock.
         let converted = self.conversion.as_ref().map(|c| c.quote.mint);
         let shapes = self.groups.shapes();
-        let costs = shapes
+        let costs: Vec<Vec<BasketPool>> = shapes
             .iter()
             .map(|shape| {
                 shape
                     .pools
                     .iter()
-                    .map(|pool| {
-                        Ok(BasketPool {
-                            venue: abi::venue(&pool.program()).with_context(|| {
-                                format!("no CU model for pool program {}", pool.program())
-                            })?,
-                            settlement_quoted: converted != Some(pool.base_mint()),
-                        })
+                    .map(|pool| BasketPool {
+                        venue: pool.venue(),
+                        settlement_quoted: converted != Some(pool.base_mint()),
+                        pump_quote_is_base: pool.pump_quote_is_base(),
                     })
-                    .collect::<Result<Vec<_>>>()
+                    .collect()
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         let token_2022 = |mint: &MintAccounts| mint.token_program == abi::TOKEN_2022;
         let groups: Vec<BasketGroup> = shapes
             .iter()
@@ -499,7 +489,11 @@ impl Basket {
                 base_token_2022: shape.stock.is_some_and(token_2022),
             })
             .collect();
-        Ok(transaction_cu(&groups, self.header.use_flashloan))
+        let converter = self
+            .conversion
+            .as_ref()
+            .map_or(DEFAULT_CONVERTER, |c| c.pool.venue());
+        transaction_cu(&groups, converter, self.header.use_flashloan)
     }
 
     /// The executor instruction with `compute_unit_limit` for the executor.

@@ -77,3 +77,17 @@ settlement = "SOL"
 intermediate = "DcM51yhj5e7AdMFV2xuejmpnMwWmSQVps7FVnMbcikiZ" # Raydium CLMM JUP/USDT
 bridges = ["7TbGqz32RsuwXbXY7EyBCiAnMbJq1gm1wKmfjQjuwoyF"]    # Raydium V4 USDT/USDC
 direct = ["EYErUp5muPYEEkeaUCY22JibeZX7E9UuMcJFZkmNAN7c"]       # Raydium V4 JUP/SOL
+
+# Two triangles in one transaction: SOL -> JUP -> USDT -> SOL or
+# SOL -> RAY -> USDT -> SOL, whichever is profitable. Every triangle's bridges
+# must be quoted in the same mint, here SOL.
+[[transactions]]
+settlement = "SOL"
+[[transactions.triangle]]
+intermediate = "DcM51yhj5e7AdMFV2xuejmpnMwWmSQVps7FVnMbcikiZ" # Raydium CLMM JUP/USDT
+bridges = ["7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX"]    # Raydium V4 USDT/SOL
+direct = ["EYErUp5muPYEEkeaUCY22JibeZX7E9UuMcJFZkmNAN7c"]       # Raydium V4 JUP/SOL
+[[transactions.triangle]]
+intermediate = "DVa7Qmb5ct9RCpaU7UTpSaf3GVMYz17vNVU67XpdCRut" # Raydium V4 RAY/USDT
+bridges = ["22HUWiJaTNph96KQTKZVy2wg8KzfCems5nyW7E5H5J6w"]    # PancakeSwap USDT/SOL
+direct = ["2AXXcN6oN9bBT5owwmTH53C7QHUXvhLeu718Kqt8rvY2"]       # Raydium CLMM RAY/SOL

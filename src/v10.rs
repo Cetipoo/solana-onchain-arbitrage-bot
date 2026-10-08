@@ -28,7 +28,7 @@ pub const METEORA: Pubkey = pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5Ua
 pub const METEORA_VAULT: Pubkey = pubkey!("24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi");
 
 /// The venue the executor quotes a pool of this program as.
-pub fn venue(program: &Pubkey) -> Option<executor_v10_abi::Venue> {
+fn venue(program: &Pubkey) -> Option<executor_v10_abi::Venue> {
     use executor_v10_abi::Venue;
     Some(match *program {
         MANIFEST => Venue::Manifest,
@@ -324,6 +324,8 @@ pub struct PoolAccounts {
     x_mint: Pubkey,
     base_mint: Pubkey,
     accounts: Vec<AccountMeta>,
+    /// Pump's orientation; `None` for every other venue.
+    pump_quote_is_base: Option<bool>,
 }
 impl PoolAccounts {
     pub fn from_pump_state(
@@ -420,6 +422,7 @@ impl PoolAccounts {
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: Some(quote.mint == base.mint),
         })
     }
 
@@ -505,11 +508,19 @@ impl PoolAccounts {
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: None,
         })
     }
 
     pub fn program(&self) -> Pubkey {
         self.program
+    }
+    /// Every constructor admits only programs the executor has a venue for.
+    pub fn venue(&self) -> executor_v10_abi::Venue {
+        venue(&self.program).expect("pool program has a V10 venue")
+    }
+    pub fn pump_quote_is_base(&self) -> Option<bool> {
+        self.pump_quote_is_base
     }
     pub fn pool(&self) -> Pubkey {
         self.pool
@@ -734,6 +745,7 @@ impl PoolAccounts {
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: None,
         })
     }
 }
@@ -840,7 +852,17 @@ impl V10Instruction {
                 "conversion must connect WSOL and USDC"
             );
             ensure!(
-                [RAYDIUM, CLMM, PANCAKESWAP, BYREAL, WHIRLPOOL, DLMM].contains(&c.pool.program)
+                [
+                    RAYDIUM,
+                    CPMM,
+                    DAMMV2,
+                    CLMM,
+                    PANCAKESWAP,
+                    BYREAL,
+                    WHIRLPOOL,
+                    DLMM
+                ]
+                .contains(&c.pool.program)
                     && c.pool.x_mint == c.quote.mint
                     && c.pool.base_mint == self.settlement.mint,
                 "invalid settlement conversion pool"
@@ -889,23 +911,6 @@ impl V10Instruction {
                 "triangle mints must differ"
             );
             ensure!(
-                [
-                    RAYDIUM,
-                    METEORA,
-                    CPMM,
-                    PUMP,
-                    DAMMV2,
-                    MANIFEST,
-                    CLMM,
-                    PANCAKESWAP,
-                    BYREAL,
-                    WHIRLPOOL,
-                    DLMM
-                ]
-                .contains(&g.intermediate.program),
-                "unsupported intermediate DEX"
-            );
-            ensure!(
                 !g.bridges.is_empty() && !g.direct.is_empty(),
                 "bridges and direct candidates required"
             );
@@ -939,23 +944,6 @@ impl V10Instruction {
                     "pool {} has incorrect V10 role",
                     p.pool
                 );
-                if j > 0 && j <= g.bridges.len() {
-                    ensure!(
-                        [
-                            RAYDIUM,
-                            METEORA,
-                            MANIFEST,
-                            PUMP,
-                            CLMM,
-                            PANCAKESWAP,
-                            BYREAL,
-                            WHIRLPOOL,
-                            DLMM
-                        ]
-                        .contains(&p.program),
-                        "unsupported bridge DEX"
-                    );
-                }
                 desc.pool_account_counts[j] = p.accounts.len().try_into()?;
                 accounts.extend_from_slice(&p.accounts);
             }
