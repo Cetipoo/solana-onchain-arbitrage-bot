@@ -1,7 +1,6 @@
-//! The executor's CU cost model: per-venue costs measured on SVM replays of
-//! captured trades, and the fixed work around them. The program budgets its
-//! search with these, and clients size a transaction's limit with the same
-//! numbers.
+//! The executor's CU cost model: per-venue costs measured on SVM replays,
+//! and the fixed work around them. The program budgets its search with
+//! these, and clients size a transaction's limit with the same numbers.
 //!
 //! Every search charge is the work the native integer search measurably
 //! performs for that operation, with a margin of about a quarter over its
@@ -15,6 +14,8 @@ pub enum Venue {
     RaydiumAmm,
     MeteoraDamm,
     Pump,
+    /// A Pump pool the executor trades with PumpSwap's v2 instructions.
+    PumpV2,
     RaydiumCpmm,
     Clmm,
     /// PancakeSwap and Byreal, Raydium CLMM forks with costlier swaps.
@@ -94,6 +95,22 @@ impl Venue {
                 crossing: 0,
                 token_2022: 3_000,
             },
+            // V2 quotes like v1. Its swap reserve is v1's less the smallest
+            // saving that warm v1/v2 swaps from identical states measured
+            // against the deployed program: 22,179 CU on 100 sells (rounded
+            // down). Those top-level instructions understate the CPI saving,
+            // which also drops v1's extra accounts.
+            Self::PumpV2 => VenueCost {
+                select: 3_200,
+                prepare: 300,
+                interval: 1_200,
+                load: 500,
+                search_crossing: 0,
+                bound: 150,
+                swap: 60_600,
+                crossing: 0,
+                token_2022: 3_000,
+            },
             Self::RaydiumCpmm => VenueCost {
                 select: 3_300,
                 prepare: 1_300,
@@ -165,6 +182,19 @@ impl Venue {
                 crossing: 0,
                 token_2022: 6_000,
             },
+        }
+    }
+
+    pub const fn is_pump(self) -> bool {
+        matches!(self, Self::Pump | Self::PumpV2)
+    }
+
+    /// The extra a Pump buy reserves over its sell. Other venues have none.
+    pub const fn pump_buy_cu(self) -> u32 {
+        match self {
+            Self::Pump => PUMP_BUY_CU,
+            Self::PumpV2 => PUMP_V2_BUY_CU,
+            _ => 0,
         }
     }
 }
@@ -245,6 +275,11 @@ pub const ADAPTIVE_ORCA_CU: u32 = 4_200;
 pub const PUMP_MISSING_ACCOUNT_CU: u32 = 27_700;
 pub const PUMP_VOLUME_CU: u32 = 8_000;
 pub const PUMP_BUY_CU: u32 = 12_000;
+/// A v2 buy's extra over its sell: v1's buy reserve less the smallest
+/// measured buy saving (29,053 CU on 100 buys, rounded down), above the v2
+/// sell reserve. The largest measured v2 buy exceeded the largest sell by
+/// 2,379 CU.
+pub const PUMP_V2_BUY_CU: u32 = 5_100;
 /// A DLMM swap paying our wallet its host share of the protocol fee makes
 /// one more token transfer.
 pub const DLMM_HOST_CLAIM_CU: u32 = 3_500;
@@ -323,10 +358,9 @@ pub fn route_work(legs: &[Venue]) -> RouteWork {
 /// Search and crossing allowance for a route's tick, bin and order-book legs,
 /// beyond one interval: the work to walk to a large trade's size and reserve
 /// its crossings, at the measured cost of a crossing. On a two-leg route the
-/// DLMM allowance funds about ten bins beside a product pool, which keeps
-/// the captured trades' profit within a tenth of a percent of the previous
-/// requests; it grew by ten bins' share of the crossing reserve's rise from
-/// 5,600 to 6,800, so the same walk still fits.
+/// DLMM allowance funds about ten bins beside a product pool; it grew by ten
+/// bins' share of the crossing reserve's rise from 5,600 to 6,800, so the
+/// same walk still fits.
 /// Concentrated and order-book allowances fund eight to ten ticks and about
 /// twenty levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -418,14 +452,15 @@ fn route_cu(legs: &[Leg]) -> u32 {
     // Reserve the costlier direction, rather than a buy on every Pump leg:
     // two pools with the same native orientation cannot both be buys.
     let (mut buys, mut sells, mut unknown) = (0u32, 0u32, 0u32);
-    for leg in legs.iter().filter(|leg| leg.venue == Venue::Pump) {
+    for leg in legs.iter().filter(|leg| leg.venue.is_pump()) {
+        let cu = leg.venue.pump_buy_cu();
         match leg.pump_buy {
-            Some(true) => buys += 1,
-            Some(false) => sells += 1,
-            None => unknown += 1,
+            Some(true) => buys += cu,
+            Some(false) => sells += cu,
+            None => unknown += cu,
         }
     }
-    let pump_buys = PUMP_BUY_CU * (buys.max(sells) + unknown);
+    let pump_buys = buys.max(sells) + unknown;
     let allowance = if long {
         LONG_ALLOWANCE
     } else {
@@ -490,8 +525,8 @@ pub fn transaction_cu(groups: &[BasketGroup<'_>], converter: Venue, loan: bool) 
     (need + need / HEADROOM_DIVISOR).min(MAX_TRANSACTION_CU)
 }
 
-/// The most `transaction_cu` requests. Every captured basket whose fit asked
-/// for more used at most 640k and found the same profit as at 1.4M.
+/// The most `transaction_cu` requests, above the 640k the largest replayed
+/// baskets used; they found the same profit as at 1.4M.
 pub const MAX_TRANSACTION_CU: u32 = 700_000;
 
 /// One part in twenty: the 5% headroom `transaction_cu` adds to its fit.
@@ -595,7 +630,7 @@ fn fit_and_floor(groups: &[BasketGroup<'_>], converter: Venue) -> (u32, u32) {
         + groups
             .iter()
             .flat_map(|g| g.pools)
-            .filter(|p| p.venue == Venue::Pump)
+            .filter(|p| p.venue.is_pump())
             .count() as u32
             * PUMP_PDA_CU;
     // The costliest route, whose allowance includes one direction's sizing.
@@ -657,337 +692,5 @@ fn fit_and_floor(groups: &[BasketGroup<'_>], converter: Venue) -> (u32, u32) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pool(venue: Venue) -> BasketPool {
-        BasketPool {
-            venue,
-            settlement_quoted: true,
-            pump_quote_is_base: None,
-        }
-    }
-
-    fn direct(pools: &[BasketPool], token_2022: bool) -> u32 {
-        fitted_cu(
-            &[BasketGroup {
-                bridges: 0,
-                pools,
-                target_token_2022: token_2022,
-                base_token_2022: false,
-            }],
-            DEFAULT_CONVERTER,
-            false,
-        )
-    }
-
-    fn fit(pools: &[BasketPool], token_2022: bool) -> (u32, u32) {
-        fit_and_floor(
-            &[BasketGroup {
-                bridges: 0,
-                pools,
-                target_token_2022: token_2022,
-                base_token_2022: false,
-            }],
-            DEFAULT_CONVERTER,
-        )
-    }
-
-    #[test]
-    fn constant_product_pairs_need_no_crossing_allowance() {
-        // Setup 3.5k + 1.5k + quotes 3k + 3.3k + discovery 6k; preparation
-        // 2.1k; execution 10.5k + 200 + swaps 53.8k; the solver's 1.2k setup
-        // and one 2.8k interval.
-        let (routes, first_candidate) =
-            fit(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], false);
-        assert_eq!(routes, 17_300 + 2_100 + 64_500 + 1_200 + 2_800);
-        // The executor must afford a first candidate before it enumerates:
-        // setup, two screens, the two swaps, sizing and the execution margin.
-        // A plain two-pool basket needs a little more than its fit.
-        assert_eq!(
-            first_candidate,
-            11_300 + 2 * SCREEN_CU + 53_800 + FIRST_CANDIDATE_CU + EXECUTION_MARGIN_CU
-        );
-        assert!(first_candidate > routes);
-        assert_eq!(
-            direct(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], false),
-            first_candidate
-        );
-        // Pump's quote, derivation, preparation, swap and buy, and its
-        // Token-2022 transfer.
-        let cpmm = fit(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], true).0;
-        let pump = fit(&[pool(Venue::Dammv2), pool(Venue::Pump)], true).0;
-        let (c, p) = (Venue::RaydiumCpmm.cost(), Venue::Pump.cost());
-        assert_eq!(
-            pump + c.select + c.prepare + c.interval + c.swap + c.token_2022,
-            cpmm + p.select
-                + PUMP_PDA_CU
-                + p.prepare
-                + p.interval
-                + p.swap
-                + PUMP_BUY_CU
-                + p.token_2022
-        );
-    }
-
-    #[test]
-    fn pump_buy_reserve_covers_every_orientation_and_cycle_direction() {
-        // Pool order is direct buy/sell, or intermediate/bridge/direct as
-        // Route::via constructs them. Reversing a cycle reverses every leg.
-        for (bridges, forward) in [(0, &[true, false][..]), (1, &[false, false, true][..])] {
-            for converts in [false, true] {
-                for converter in [Venue::RaydiumAmm, Venue::Pump] {
-                    let mut storage = [pool(Venue::Pump); 3];
-                    let pools = &mut storage[..forward.len()];
-                    pools[1].settlement_quoted = !converts;
-                    let route_cost = |pools: &[BasketPool]| {
-                        let mut cost = None;
-                        each_route(
-                            &[BasketGroup {
-                                bridges,
-                                pools,
-                                target_token_2022: false,
-                                base_token_2022: false,
-                            }],
-                            converter,
-                            |legs| {
-                                assert!(cost.is_none());
-                                cost = Some(route_cu(legs));
-                            },
-                        );
-                        cost.unwrap()
-                    };
-                    let unknown_cost = route_cost(pools);
-                    let unknown_converter = usize::from(converts && converter == Venue::Pump);
-                    // Each pool is unknown, native quote = x, or native quote
-                    // = route base. Exhaust all compatible native states.
-                    for mut metadata in 0..3usize.pow(pools.len() as u32) {
-                        for pool in pools.iter_mut() {
-                            pool.pump_quote_is_base = match metadata % 3 {
-                                0 => None,
-                                1 => Some(false),
-                                _ => Some(true),
-                            };
-                            metadata /= 3;
-                        }
-                        let mut max_buys = 0;
-                        for native in 0..(1 << pools.len()) {
-                            if pools.iter().enumerate().any(|(i, pool)| {
-                                pool.pump_quote_is_base
-                                    .is_some_and(|quote| quote != (native & (1 << i) != 0))
-                            }) {
-                                continue;
-                            }
-                            for reverse in [false, true] {
-                                let buys = forward
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(i, direction)| {
-                                        (**direction ^ reverse) == (native & (1 << i) != 0)
-                                    })
-                                    .count()
-                                    + unknown_converter;
-                                max_buys = max_buys.max(buys);
-                            }
-                        }
-                        let saved_buys = pools.len() + unknown_converter - max_buys;
-                        assert_eq!(
-                            unknown_cost - route_cost(pools),
-                            saved_buys as u32 * PUMP_BUY_CU,
-                            "bridges={bridges}, converts={converts}, converter={converter:?}, pools={pools:?}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_execution_margins_cover_the_safety_and_wrapper_work() {
-        assert_eq!(EXECUTION_MARGIN_CU, 10_500);
-        assert_eq!(SCREEN_CU, 825);
-        // Execution reserves keep the measured swap costs and crossings.
-        let dlmm = Venue::Dlmm.cost();
-        assert_eq!(
-            (dlmm.swap, dlmm.crossing, dlmm.token_2022),
-            (35_400, 6_800, 5_600)
-        );
-        assert_eq!(Venue::ClmmFork.cost().swap, 59_500);
-    }
-
-    #[test]
-    fn a_basket_sizes_only_its_costliest_other_candidates() {
-        // Every DLMM pair costs the same. Four pools already have more than
-        // three other candidates, so a fifth adds only its quote and the
-        // screens of its four new pairs.
-        let pools = [pool(Venue::Dlmm); 6];
-        let fit = |n: usize| fit(&pools[..n], false).0;
-        // Five pools screen twenty routes, above discovery's 10k floor.
-        assert_eq!(fit(6) - fit(5), Venue::Dlmm.cost().select + 10 * SCREEN_CU);
-    }
-
-    #[test]
-    fn long_preparation_preserves_search_and_execution_reserves() {
-        let legs = [Venue::Dlmm, Venue::Clmm, Venue::Pump, Venue::RaydiumAmm];
-        // Native planning charges 1.5k fixed preparation plus each venue's
-        // preparation. Enumeration and verification have separate charges.
-        let three = route_work(&legs[..3]);
-        assert_eq!(three.preparation, 1_500 + 2_300 + 5_000 + 300);
-        assert_eq!(three.search, 0);
-        assert_eq!(three.interval, 1_500 + 3 * 400);
-        assert_eq!(
-            three.execution,
-            EXECUTION_MARGIN_CU + 300 + 35_400 + 46_500 + 82_700
-        );
-
-        let four = route_work(&legs);
-        assert_eq!(four.preparation, three.preparation + 1_000);
-        assert_eq!(four.search, 0);
-        assert_eq!(four.interval, three.interval + 400);
-        assert_eq!(four.execution, three.execution + 18_600 + 100);
-    }
-
-    #[test]
-    fn converted_wide_baskets_use_native_long_preparation() {
-        // These baskets contain both two-leg and converted three-leg routes.
-        // The costliest route keeps its full walking/execution reserve.
-        // Three further routes share the reduced preparation allowance.
-        for (venue, count, converted) in [
-            (Venue::Dlmm, 5, 3),
-            (Venue::Dlmm, 7, 4),
-            (Venue::Whirlpool, 5, 3),
-        ] {
-            let mut pools = [pool(venue); 7];
-            for pool in &mut pools[..converted] {
-                pool.settlement_quoted = false;
-            }
-            let groups = [BasketGroup {
-                bridges: 0,
-                pools: &pools[..count],
-                target_token_2022: false,
-                base_token_2022: false,
-            }];
-            let request = transaction_cu(&groups, DEFAULT_CONVERTER, false);
-            // The converted three-leg route is the costliest; the request
-            // stays below the cap and above the two-leg request.
-            let two_leg = transaction_cu(
-                &[BasketGroup {
-                    bridges: 0,
-                    pools: &[pool(venue), pool(venue)],
-                    target_token_2022: false,
-                    base_token_2022: false,
-                }],
-                DEFAULT_CONVERTER,
-                false,
-            );
-            assert!(request > two_leg && request < MAX_TRANSACTION_CU);
-        }
-    }
-
-    #[test]
-    fn the_widest_basket_stays_below_the_cap() {
-        let pools = [pool(Venue::Clmm); 16];
-        let groups = [BasketGroup {
-            bridges: 0,
-            pools: &pools,
-            target_token_2022: true,
-            base_token_2022: false,
-        }];
-        let request = transaction_cu(&groups, DEFAULT_CONVERTER, true);
-        assert!(request < MAX_TRANSACTION_CU);
-        // 240 screens, the costliest pair's walk and three more candidates.
-        assert!(request > 400_000);
-    }
-
-    #[test]
-    fn the_transaction_limit_adds_headroom_to_the_fit() {
-        let pools = [pool(Venue::Dlmm), pool(Venue::Clmm)];
-        let groups = [BasketGroup {
-            bridges: 0,
-            pools: &pools,
-            target_token_2022: false,
-            base_token_2022: false,
-        }];
-        let need = fitted_cu(&groups, DEFAULT_CONVERTER, true);
-        assert_eq!(
-            transaction_cu(&groups, DEFAULT_CONVERTER, true),
-            need + need / 20
-        );
-    }
-
-    #[test]
-    fn the_costliest_route_and_every_quote_set_the_limit() {
-        let dlmm_pump = direct(&[pool(Venue::Dlmm), pool(Venue::Pump)], false);
-        // A third pool is quoted and its additional pairs are sized too.
-        let with_cpmm = direct(
-            &[
-                pool(Venue::Dlmm),
-                pool(Venue::Pump),
-                pool(Venue::RaydiumCpmm),
-            ],
-            false,
-        );
-        let leg = |venue| Leg {
-            venue,
-            token_2022_mints: 0,
-            pump_buy: None,
-        };
-        // Its quote, and discovery stays at its 10k floor for six screens.
-        assert_eq!(
-            with_cpmm,
-            dlmm_pump
-                + Venue::RaydiumCpmm.cost().select
-                + candidate_cu(&[leg(Venue::Dlmm), leg(Venue::RaydiumCpmm)])
-                + candidate_cu(&[leg(Venue::Pump), leg(Venue::RaydiumCpmm)])
-        );
-        // Two crossing legs add the extra-leg allowance.
-        let two = direct(&[pool(Venue::Dlmm), pool(Venue::Clmm)], false);
-        let one = direct(&[pool(Venue::Dlmm), pool(Venue::RaydiumCpmm)], false);
-        assert!(two > one + SHORT_ALLOWANCE.extra_leg);
-    }
-
-    #[test]
-    fn conversions_and_bridges_route_through_longer_cycles() {
-        let quoted = direct(&[pool(Venue::Dlmm), pool(Venue::Pump)], false);
-        let mut other = pool(Venue::Dlmm);
-        other.settlement_quoted = false;
-        let converting = direct(&[other, pool(Venue::Pump)], false);
-        // The converter is quoted and swapped, and the cycle becomes long.
-        assert!(converting > quoted);
-        // Two pools in the other mint alone form no cycle.
-        let mut both = [other, other];
-        both[1].venue = Venue::Clmm;
-        assert_eq!(
-            direct(&both, false),
-            quote_cu(1, [Venue::Dlmm, Venue::Clmm, Venue::RaydiumAmm].into_iter()) + DISCOVERY_CU
-        );
-        let stock = |bridge: BasketPool| {
-            fitted_cu(
-                &[BasketGroup {
-                    bridges: 1,
-                    pools: &[pool(Venue::Dlmm), bridge, pool(Venue::Pump)],
-                    target_token_2022: false,
-                    base_token_2022: false,
-                }],
-                DEFAULT_CONVERTER,
-                true,
-            )
-        };
-        let mut converting_bridge = pool(Venue::Clmm);
-        converting_bridge.settlement_quoted = false;
-        assert!(stock(converting_bridge) > stock(pool(Venue::Clmm)));
-        let legs = [Venue::Dlmm, Venue::Clmm, Venue::Pump].map(|venue| Leg {
-            venue,
-            token_2022_mints: 0,
-            pump_buy: None,
-        });
-        // The only route's sizing is included in its own allowance.
-        assert_eq!(
-            stock(pool(Venue::Clmm)) - LOAN_CU,
-            quote_cu(1, [Venue::Dlmm, Venue::Clmm, Venue::Pump].into_iter())
-                + PUMP_PDA_CU
-                + DISCOVERY_CU
-                + route_cu(&legs)
-        );
-    }
-}
+#[path = "cost_tests.rs"]
+mod tests;

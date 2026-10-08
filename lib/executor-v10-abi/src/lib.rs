@@ -6,6 +6,12 @@ pub const PREFIX_LEN: usize = 25;
 pub const MAX_GROUPS: usize = 4;
 pub const MAX_POOLS: usize = 16;
 pub const MAX_POOL_ACCOUNTS: usize = 24;
+/// A Pump pool block of exactly this many accounts uses the compact layout
+/// the executor trades only with PumpSwap v2: the program and declared base
+/// mint, then the global config, event authority, pool, x and base vaults,
+/// the wallet's volume accumulator, the fee config and a buyback recipient's
+/// quote account. Longer Pump blocks carry the legacy v1 layout.
+pub const PUMP_V2_POOL_ACCOUNTS: usize = 10;
 pub const MAX_PAYLOAD_LEN: usize = PREFIX_LEN + 1 + MAX_GROUPS * 2 + MAX_POOLS * 2;
 pub const MAX_ADDITIONAL_FEE_BP: u16 = 8_500;
 
