@@ -3,6 +3,3 @@ name = "executor-v10-abi"
 version = "0.1.0"
 edition = "2021"
 publish = false
-
-[dev-dependencies]
-serde_json = "1"

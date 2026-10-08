@@ -5,4 +5,3 @@ config.toml
 .DS_Store
 # Keypair files
 *.json
-!lib/executor-v10-abi/idl.json

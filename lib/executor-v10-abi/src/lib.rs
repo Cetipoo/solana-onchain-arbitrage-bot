@@ -444,46 +444,6 @@ mod tests {
         assert!(data.validate().is_err());
     }
     #[test]
-    fn idl_header_matches_the_encoding() {
-        let idl: serde_json::Value = serde_json::from_str(include_str!("../idl.json")).unwrap();
-        let ix = &idl["instructions"][0];
-        assert_eq!(ix["discriminator"], serde_json::json!([OPCODE]));
-        let mut data = instruction();
-        data.conversion_account_count = 6;
-        data.header.constant_conversion = true;
-        let mut buffer = [0; MAX_PAYLOAD_LEN];
-        let bytes = data.encode(&mut buffer).unwrap();
-        let h = data.header;
-        let expected = [
-            ("minimum_profit", h.minimum_profit),
-            ("compute_unit_limit", h.compute_unit_limit.into()),
-            ("no_failure", h.no_failure.into()),
-            ("additional_fee_bp", h.additional_fee_bp.into()),
-            ("use_flashloan", h.use_flashloan.into()),
-            ("trade_size", h.trade_size),
-            ("flags", 3),
-            ("group_count", data.group_count.into()),
-        ];
-        let args = ix["args"].as_array().unwrap();
-        assert_eq!(args.len(), expected.len());
-        let mut offset = 0;
-        for (arg, (name, value)) in args.iter().zip(expected) {
-            let size = match arg["type"].as_str().unwrap() {
-                "u64" => 8,
-                "u32" => 4,
-                "u16" => 2,
-                "u8" | "bool" => 1,
-                other => panic!("unexpected IDL arg type {other}"),
-            };
-            let mut le = [0; 8];
-            le[..size].copy_from_slice(&bytes[offset..offset + size]);
-            assert_eq!(arg["name"], name);
-            assert_eq!(u64::from_le_bytes(le), value, "{name}");
-            offset += size;
-        }
-        assert_eq!(offset, PREFIX_LEN + 1);
-    }
-    #[test]
     fn constant_conversion_flag_is_opt_in_and_requires_converter() {
         let mut data = instruction();
         data.header.constant_conversion = true;

@@ -852,19 +852,7 @@ impl V10Instruction {
                 "conversion must connect WSOL and USDC"
             );
             ensure!(
-                [
-                    RAYDIUM,
-                    CPMM,
-                    DAMMV2,
-                    CLMM,
-                    PANCAKESWAP,
-                    BYREAL,
-                    WHIRLPOOL,
-                    DLMM
-                ]
-                .contains(&c.pool.program)
-                    && c.pool.x_mint == c.quote.mint
-                    && c.pool.base_mint == self.settlement.mint,
+                c.pool.x_mint == c.quote.mint && c.pool.base_mint == self.settlement.mint,
                 "invalid settlement conversion pool"
             );
             data.conversion_account_count = c.pool.accounts.len().try_into()?;
