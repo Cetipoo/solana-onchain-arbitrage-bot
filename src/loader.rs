@@ -1,4 +1,5 @@
 //! Batched, memoized account reads for building each mint's pools.
+use crate::pump_fees::FeeRecipients;
 use crate::v10::{self as abi, MintAccounts, PoolAccounts};
 use anyhow::{ensure, Context, Result};
 use solana_client::rpc_client::RpcClient;
@@ -58,6 +59,11 @@ impl<'a> AccountLoader<'a> {
         Ok(self.accounts[&key].as_ref())
     }
 
+    /// Prefetched accounts, `None` where one does not exist.
+    fn cached(&self, keys: &[Pubkey]) -> Vec<Option<Account>> {
+        keys.iter().map(|key| self.accounts[key].clone()).collect()
+    }
+
     pub fn get(&mut self, key: Pubkey) -> Result<Account> {
         self.account(key)?
             .cloned()
@@ -111,21 +117,33 @@ impl<'a> AccountLoader<'a> {
                 let global = self.get(reads[0])?;
                 ensure!(global.owner == abi::PUMP, "invalid Pump global owner");
                 let mut keys = abi::PumpKeys::from_state(&state.data, &global.data, x, base)?;
-                let mut recipients = crate::pump_fees::FeeRecipients::new(
+                let quote = keys.quote;
+                let mut recipients = FeeRecipients::new(
                     &global.data,
                     state.data.get(243) == Some(&1),
-                    keys.quote.mint,
-                    keys.quote.token_program,
+                    quote.mint,
+                    quote.token_program,
                 )?;
-                let addresses = recipients.addresses();
-                self.prefetch(addresses.iter().copied())?;
-                recipients.prefer_initialized(
-                    &addresses
-                        .iter()
-                        .map(|key| self.accounts[key].clone())
-                        .collect::<Vec<_>>(),
+                // V2 never creates its buyback account. Without an existing
+                // one, list the legacy layout, whose v1 swap does.
+                let buyback = keys
+                    .v2_eligible()
+                    .then(|| FeeRecipients::buyback(&global.data, quote.mint, quote.token_program))
+                    .transpose()?;
+                self.prefetch(
+                    recipients
+                        .addresses()
+                        .into_iter()
+                        .chain(buyback.iter().flat_map(FeeRecipients::addresses)),
                 )?;
+                recipients.prefer_initialized(&self.cached(&recipients.addresses()))?;
                 keys.recipient = recipients.choose().0;
+                if let Some(mut buyback) = buyback {
+                    keys.v2 = buyback.prefer_initialized(&self.cached(&buyback.addresses()))?;
+                    if keys.v2 {
+                        keys.buyback = buyback.choose().0;
+                    }
+                }
                 PoolAccounts::from_pump_keys(pool, wallet, x, base, keys)
             }
             abi::METEORA => {

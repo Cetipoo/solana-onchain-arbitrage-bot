@@ -56,7 +56,7 @@ Use the **full featured production bot** instead:
 
 ## 🏦 Supported DEXes
 
-- Pump AMM
+- Pump AMM (non-cashback SOL/USDC pools use the compact ten-account PumpSwap v2 layout)
 - Raydium V4
 - Raydium CPMM
 - Raydium CLMM

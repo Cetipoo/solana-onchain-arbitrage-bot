@@ -1,6 +1,8 @@
 //! V10 instruction builder for the on-chain arbitrage program.
 use anyhow::{bail, ensure, Result};
-use executor_v10_abi::{Group, InstructionData, Venue, MAX_GROUPS, MAX_PAYLOAD_LEN, MAX_POOLS};
+use executor_v10_abi::{
+    Group, InstructionData, Venue, MAX_GROUPS, MAX_PAYLOAD_LEN, MAX_POOLS, PUMP_V2_POOL_ACCOUNTS,
+};
 pub use executor_v10_abi::{Header, OPCODE};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -278,6 +280,10 @@ pub struct PumpKeys {
     pub creator: Pubkey,
     pub cashback: bool,
     pub buyback: Pubkey,
+    /// List the compact layout the executor trades with PumpSwap v2. Only a
+    /// caller that has seen `buyback`'s quote account exist may set it: v2
+    /// never creates that account.
+    pub v2: bool,
 }
 
 impl PumpKeys {
@@ -310,7 +316,16 @@ impl PumpKeys {
             creator: key(211)?,
             cashback: data.get(244) == Some(&1),
             buyback: Pubkey::new_from_array(read(global, 643)?),
+            v2: false,
         })
+    }
+
+    /// Whether PumpSwap v2 can trade the pool, given an existing buyback
+    /// quote account.
+    pub fn v2_eligible(&self) -> bool {
+        !self.cashback
+            && [SOL, USDC].contains(&self.quote.mint)
+            && self.quote.token_program == TOKEN
     }
 }
 
@@ -325,23 +340,6 @@ pub struct PoolAccounts {
     pump_quote_is_base: Option<bool>,
 }
 impl PoolAccounts {
-    pub fn from_pump_state(
-        pool: Pubkey,
-        data: &[u8],
-        global: &[u8],
-        wallet: Pubkey,
-        x: MintAccounts,
-        base: MintAccounts,
-    ) -> Result<Self> {
-        Self::from_pump_keys(
-            pool,
-            wallet,
-            x,
-            base,
-            PumpKeys::from_state(data, global, x, base)?,
-        )
-    }
-
     pub fn from_pump_keys(
         pool: Pubkey,
         wallet: Pubkey,
@@ -355,12 +353,19 @@ impl PoolAccounts {
                 && keys.quote.mint != keys.mint0,
             "invalid Pump orientation"
         );
-        let [x_vault, base_vault] = keys.vaults;
+        ensure!(
+            !keys.v2 || keys.v2_eligible(),
+            "Pump v2 requires a non-cashback SOL or USDC pool"
+        );
         let PumpKeys {
+            vaults: [x_vault, base_vault],
             mint0,
             quote,
             recipient,
-            ..
+            creator,
+            cashback,
+            buyback,
+            v2,
         } = keys;
         let pda = |seeds: &[&[u8]]| Pubkey::find_program_address(seeds, &PUMP).0;
         let ata = |owner: Pubkey| {
@@ -374,47 +379,60 @@ impl PoolAccounts {
             )
             .0
         };
-        let creator = pda(&[b"creator_vault", keys.creator.as_ref()]);
+        let volume = pda(&[b"user_volume_accumulator", wallet.as_ref()]);
+        let fee_config = Pubkey::find_program_address(&[b"fee_config", PUMP.as_ref()], &PUMP_FEE).0;
         let mut accounts = vec![
             AccountMeta::new_readonly(PUMP, false),
             AccountMeta::new_readonly(base.mint, false),
             AccountMeta::new_readonly(pda(&[b"global_config"]), false),
             AccountMeta::new_readonly(pda(&[b"__event_authority"]), false),
-            AccountMeta::new_readonly(recipient, false),
-            AccountMeta::new(pool, false),
-            AccountMeta::new(x_vault, false),
-            AccountMeta::new(base_vault, false),
-            AccountMeta::new(ata(recipient), false),
-            AccountMeta::new(ata(creator), false),
-            AccountMeta::new_readonly(creator, false),
-            AccountMeta::new_readonly(pda(&[b"global_volume_accumulator"]), false),
-            AccountMeta::new(pda(&[b"user_volume_accumulator", wallet.as_ref()]), false),
-            AccountMeta::new_readonly(
-                Pubkey::find_program_address(&[b"fee_config", PUMP.as_ref()], &PUMP_FEE).0,
-                false,
-            ),
-            AccountMeta::new_readonly(PUMP_FEE, false),
         ];
-        if keys.cashback {
-            let volume = pda(&[b"user_volume_accumulator", wallet.as_ref()]);
+        let venue = if v2 {
             accounts.extend([
-                AccountMeta::new(ata(volume), false),
+                AccountMeta::new(pool, false),
+                AccountMeta::new(x_vault, false),
+                AccountMeta::new(base_vault, false),
                 AccountMeta::new(volume, false),
+                AccountMeta::new_readonly(fee_config, false),
+                AccountMeta::new(ata(buyback), false),
             ]);
-        }
-        if keys.creator != Pubkey::default() {
-            accounts.push(AccountMeta::new_readonly(
-                pda(&[b"pool-v2", mint0.as_ref()]),
-                false,
-            ));
-        }
-        let buyback = keys.buyback;
-        accounts.extend([
-            AccountMeta::new_readonly(buyback, false),
-            AccountMeta::new(ata(buyback), false),
-        ]);
+            debug_assert_eq!(accounts.len(), PUMP_V2_POOL_ACCOUNTS);
+            Venue::PumpV2
+        } else {
+            let creator_vault = pda(&[b"creator_vault", creator.as_ref()]);
+            accounts.extend([
+                AccountMeta::new_readonly(recipient, false),
+                AccountMeta::new(pool, false),
+                AccountMeta::new(x_vault, false),
+                AccountMeta::new(base_vault, false),
+                AccountMeta::new(ata(recipient), false),
+                AccountMeta::new(ata(creator_vault), false),
+                AccountMeta::new_readonly(creator_vault, false),
+                AccountMeta::new_readonly(pda(&[b"global_volume_accumulator"]), false),
+                AccountMeta::new(volume, false),
+                AccountMeta::new_readonly(fee_config, false),
+                AccountMeta::new_readonly(PUMP_FEE, false),
+            ]);
+            if cashback {
+                accounts.extend([
+                    AccountMeta::new(ata(volume), false),
+                    AccountMeta::new(volume, false),
+                ]);
+            }
+            if creator != Pubkey::default() {
+                accounts.push(AccountMeta::new_readonly(
+                    pda(&[b"pool-v2", mint0.as_ref()]),
+                    false,
+                ));
+            }
+            accounts.extend([
+                AccountMeta::new_readonly(buyback, false),
+                AccountMeta::new(ata(buyback), false),
+            ]);
+            Venue::Pump
+        };
         Ok(Self {
-            venue: Venue::Pump,
+            venue,
             pool,
             x_mint: x.mint,
             base_mint: base.mint,
@@ -547,7 +565,7 @@ impl PoolAccounts {
         };
         ensure!(
             owner != PUMP,
-            "Pump requires from_pump_state with its global config"
+            "Pump requires from_pump_keys with its fee accounts"
         );
         ensure!(
             owner != METEORA,

@@ -19,6 +19,25 @@ impl FeeRecipients {
         } else {
             (0..8).map(|i| 57 + i * 32).collect()
         };
+        Self::from_offsets(global, offsets, quote, token_program)
+    }
+
+    /// The buyback fee recipients, one of whose quote accounts a v2 swap pays.
+    pub fn buyback(global: &[u8], quote: Pubkey, token_program: Pubkey) -> Result<Self> {
+        Self::from_offsets(
+            global,
+            (0..8).map(|i| 643 + i * 32).collect(),
+            quote,
+            token_program,
+        )
+    }
+
+    fn from_offsets(
+        global: &[u8],
+        offsets: Vec<usize>,
+        quote: Pubkey,
+        token_program: Pubkey,
+    ) -> Result<Self> {
         let mut candidates = Vec::new();
         for offset in offsets {
             let recipient = Pubkey::new_from_array(
@@ -46,8 +65,9 @@ impl FeeRecipients {
         self.candidates.iter().map(|(_, ata)| *ata).collect()
     }
 
-    /// Preserve ordinary account creation when none exists; otherwise use only warm ATAs.
-    pub fn prefer_initialized(&mut self, accounts: &[Option<Account>]) -> Result<()> {
+    /// Preserve ordinary account creation when none exists; otherwise use only
+    /// warm ATAs. Returns whether any exists.
+    pub fn prefer_initialized(&mut self, accounts: &[Option<Account>]) -> Result<bool> {
         ensure!(
             accounts.len() == self.candidates.len(),
             "Pump fee account response length mismatch"
@@ -66,10 +86,11 @@ impl FeeRecipients {
                     .then_some(*pair)
             })
             .collect();
-        if !initialized.is_empty() {
-            self.candidates = initialized;
+        if initialized.is_empty() {
+            return Ok(false);
         }
-        Ok(())
+        self.candidates = initialized;
+        Ok(true)
     }
 
     pub fn choose(&self) -> (Pubkey, Pubkey) {
@@ -138,6 +159,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn buyback_accounts_report_whether_a_v2_swap_can_pay_one() {
+        let mut global = vec![0; 643 + 8 * 32];
+        let owners: Vec<_> = (0..8).map(|_| Pubkey::new_unique()).collect();
+        for (i, owner) in owners.iter().enumerate() {
+            global[643 + i * 32..675 + i * 32].copy_from_slice(owner.as_ref());
+        }
+        let mut buyback = FeeRecipients::buyback(&global, abi::USDC, abi::TOKEN).unwrap();
+        let pairs = buyback.candidates.clone();
+        assert_eq!(
+            pairs.iter().map(|(owner, _)| *owner).collect::<Vec<_>>(),
+            owners
+        );
+        // V2 never creates the account: none existing keeps v1's candidates.
+        assert!(!buyback.prefer_initialized(&vec![None; 8]).unwrap());
+        assert_eq!(buyback.candidates, pairs);
+        let mut accounts = vec![None; 8];
+        accounts[3] = Some(initialized(owners[3], abi::USDC, abi::TOKEN));
+        assert!(buyback.prefer_initialized(&accounts).unwrap());
+        assert_eq!(buyback.choose(), pairs[3]);
     }
 
     #[test]

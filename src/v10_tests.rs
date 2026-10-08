@@ -364,3 +364,79 @@ fn manifest_markets_need_a_spare_order_node() {
         assert!(error.contains("no spare order node"), "{error}");
     }
 }
+
+fn pump(
+    wallet: Pubkey,
+    target: MintAccounts,
+    quote: MintAccounts,
+    cashback: bool,
+    v2: bool,
+) -> Result<PoolAccounts> {
+    PoolAccounts::from_pump_keys(
+        Pubkey::new_unique(),
+        wallet,
+        target,
+        quote,
+        PumpKeys {
+            vaults: [Pubkey::new_unique(), Pubkey::new_unique()],
+            mint0: target.mint,
+            quote,
+            recipient: Pubkey::new_unique(),
+            creator: Pubkey::new_unique(),
+            cashback,
+            buyback: Pubkey::new_unique(),
+            v2,
+        },
+    )
+}
+
+#[test]
+fn compact_pump_blocks_list_only_what_v2_needs() {
+    let request = request();
+    let wallet = request.wallet;
+    let target = MintAccounts::ata(&wallet, Pubkey::new_unique(), TOKEN).unwrap();
+    let direct = |v2| {
+        let pools = vec![
+            pump(wallet, target, request.settlement, false, v2).unwrap(),
+            pump(wallet, target, request.settlement, false, v2).unwrap(),
+        ];
+        request
+            .build_direct(&[DirectGroup { target, pools }])
+            .unwrap()
+    };
+    let compact = direct(true);
+    let args = InstructionData::decode(&compact.data[1..]).unwrap();
+    assert_eq!(args.account_count(), compact.accounts.len());
+    assert!(args.groups[0].pool_account_counts[..2]
+        .iter()
+        .all(|&n| usize::from(n) == PUMP_V2_POOL_ACCOUNTS));
+    // Each compact block lists ten of the legacy block's eighteen accounts.
+    // The transaction holds each key once. Compact blocks drop each pool's
+    // fee recipient, creator vault, their quote accounts and the buyback
+    // owner, plus the target's pool-v2 PDA, the global volume accumulator
+    // and the fee program the two pools share.
+    let legacy = direct(false);
+    assert_eq!(legacy.accounts.len() - compact.accounts.len(), 2 * 8);
+    let unique = |ix: &Instruction| {
+        ix.accounts
+            .iter()
+            .map(|a| a.pubkey)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    assert_eq!(unique(&legacy) - unique(&compact), 2 * 5 + 3);
+
+    let pool = pump(wallet, target, request.settlement, false, true).unwrap();
+    assert_eq!(pool.venue(), Venue::PumpV2);
+    assert_eq!(pool.pump_quote_is_base(), Some(true));
+    let legacy = pump(wallet, target, request.settlement, false, false).unwrap();
+    assert_eq!(legacy.venue(), Venue::Pump);
+    assert_eq!(legacy.accounts()[..2], pool.accounts()[..2]);
+
+    // V2 never trades cashback coins or other quotes.
+    assert!(pump(wallet, target, request.settlement, true, true).is_err());
+    let other = MintAccounts::ata(&wallet, Pubkey::new_unique(), TOKEN).unwrap();
+    assert!(pump(wallet, target, other, false, true).is_err());
+    let sol_2022 = MintAccounts::ata(&wallet, SOL, TOKEN_2022).unwrap();
+    assert!(pump(wallet, target, sol_2022, false, true).is_err());
+}
