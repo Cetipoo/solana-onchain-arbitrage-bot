@@ -122,7 +122,7 @@ Each `[[transactions]]` entry is one V10 instruction. It settles in SOL or USDC,
 - **Direct group** (`pools`): two or more pools trading one token against SOL or USDC, at least one quoted in the settlement mint.
 - **Triangle group**:
   - `intermediate`: trades the token against a second token, the stock.
-  - `bridges`: trade the stock against SOL or USDC. Every triangle in a transaction uses the same quote mint. Raydium CPMM and Meteora DAMM v2 cannot be bridges.
+  - `bridges`: trade the stock against SOL or USDC. Every triangle in a transaction uses the same quote mint.
   - `direct`: trade the token against the settlement mint.
 
 A transaction may hold at most 16 pools, including the conversion, and must fit a v1 transaction (64 accounts, 4096 bytes); the bot reports an oversized transaction instead of sending it. Pool state is reloaded every 5 seconds. A pool that cannot be traded at that moment, such as a full Manifest market, is left out until the next reload.

@@ -1,6 +1,6 @@
 //! V10 instruction builder for the on-chain arbitrage program.
 use anyhow::{bail, ensure, Result};
-use executor_v10_abi::{Group, InstructionData, MAX_GROUPS, MAX_PAYLOAD_LEN, MAX_POOLS};
+use executor_v10_abi::{Group, InstructionData, Venue, MAX_GROUPS, MAX_PAYLOAD_LEN, MAX_POOLS};
 pub use executor_v10_abi::{Header, OPCODE};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
@@ -27,23 +27,6 @@ pub const DAMMV2: Pubkey = pubkey!("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
 pub const METEORA: Pubkey = pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB");
 pub const METEORA_VAULT: Pubkey = pubkey!("24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi");
 
-/// The venue the executor quotes a pool of this program as.
-pub fn venue(program: &Pubkey) -> Option<executor_v10_abi::Venue> {
-    use executor_v10_abi::Venue;
-    Some(match *program {
-        MANIFEST => Venue::Manifest,
-        RAYDIUM => Venue::RaydiumAmm,
-        METEORA => Venue::MeteoraDamm,
-        PUMP => Venue::Pump,
-        CPMM => Venue::RaydiumCpmm,
-        CLMM => Venue::Clmm,
-        PANCAKESWAP | BYREAL => Venue::ClmmFork,
-        WHIRLPOOL => Venue::Whirlpool,
-        DLMM => Venue::Dlmm,
-        DAMMV2 => Venue::Dammv2,
-        _ => return None,
-    })
-}
 pub const SOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 pub const USDC: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 pub const TOKEN: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -270,6 +253,20 @@ impl PoolKeys<'_> {
             Self::Dlmm { .. } => DLMM,
         }
     }
+
+    /// The venue the executor quotes the pool as.
+    fn venue(self) -> Venue {
+        match self {
+            Self::Raydium => Venue::RaydiumAmm,
+            Self::Cpmm { .. } => Venue::RaydiumCpmm,
+            Self::DammV2 => Venue::Dammv2,
+            Self::Manifest => Venue::Manifest,
+            Self::Clmm { program, .. } if program == CLMM => Venue::Clmm,
+            Self::Clmm { .. } => Venue::ClmmFork,
+            Self::Whirlpool { .. } => Venue::Whirlpool,
+            Self::Dlmm { .. } => Venue::Dlmm,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -319,11 +316,13 @@ impl PumpKeys {
 
 #[derive(Clone, Debug)]
 pub struct PoolAccounts {
-    program: Pubkey,
+    venue: Venue,
     pool: Pubkey,
     x_mint: Pubkey,
     base_mint: Pubkey,
     accounts: Vec<AccountMeta>,
+    /// Pump's orientation; `None` for every other venue.
+    pump_quote_is_base: Option<bool>,
 }
 impl PoolAccounts {
     pub fn from_pump_state(
@@ -415,11 +414,12 @@ impl PoolAccounts {
             AccountMeta::new(ata(buyback), false),
         ]);
         Ok(Self {
-            program: PUMP,
+            venue: Venue::Pump,
             pool,
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: Some(quote.mint == base.mint),
         })
     }
 
@@ -500,16 +500,20 @@ impl PoolAccounts {
                 .flat_map(|(x, base)| [AccountMeta::new(x, false), AccountMeta::new(base, false)]),
         );
         Ok(Self {
-            program: METEORA,
+            venue: Venue::MeteoraDamm,
             pool,
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: None,
         })
     }
 
-    pub fn program(&self) -> Pubkey {
-        self.program
+    pub fn venue(&self) -> Venue {
+        self.venue
+    }
+    pub fn pump_quote_is_base(&self) -> Option<bool> {
+        self.pump_quote_is_base
     }
     pub fn pool(&self) -> Pubkey {
         self.pool
@@ -729,11 +733,12 @@ impl PoolAccounts {
             }
         }
         Ok(Self {
-            program: owner,
+            venue: keys.venue(),
             pool,
             x_mint: x.mint,
             base_mint: base.mint,
             accounts,
+            pump_quote_is_base: None,
         })
     }
 }
@@ -840,9 +845,7 @@ impl V10Instruction {
                 "conversion must connect WSOL and USDC"
             );
             ensure!(
-                [RAYDIUM, CLMM, PANCAKESWAP, BYREAL, WHIRLPOOL, DLMM].contains(&c.pool.program)
-                    && c.pool.x_mint == c.quote.mint
-                    && c.pool.base_mint == self.settlement.mint,
+                c.pool.x_mint == c.quote.mint && c.pool.base_mint == self.settlement.mint,
                 "invalid settlement conversion pool"
             );
             data.conversion_account_count = c.pool.accounts.len().try_into()?;
@@ -889,23 +892,6 @@ impl V10Instruction {
                 "triangle mints must differ"
             );
             ensure!(
-                [
-                    RAYDIUM,
-                    METEORA,
-                    CPMM,
-                    PUMP,
-                    DAMMV2,
-                    MANIFEST,
-                    CLMM,
-                    PANCAKESWAP,
-                    BYREAL,
-                    WHIRLPOOL,
-                    DLMM
-                ]
-                .contains(&g.intermediate.program),
-                "unsupported intermediate DEX"
-            );
-            ensure!(
                 !g.bridges.is_empty() && !g.direct.is_empty(),
                 "bridges and direct candidates required"
             );
@@ -939,23 +925,6 @@ impl V10Instruction {
                     "pool {} has incorrect V10 role",
                     p.pool
                 );
-                if j > 0 && j <= g.bridges.len() {
-                    ensure!(
-                        [
-                            RAYDIUM,
-                            METEORA,
-                            MANIFEST,
-                            PUMP,
-                            CLMM,
-                            PANCAKESWAP,
-                            BYREAL,
-                            WHIRLPOOL,
-                            DLMM
-                        ]
-                        .contains(&p.program),
-                        "unsupported bridge DEX"
-                    );
-                }
                 desc.pool_account_counts[j] = p.accounts.len().try_into()?;
                 accounts.extend_from_slice(&p.accounts);
             }
