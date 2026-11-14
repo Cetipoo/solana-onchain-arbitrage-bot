@@ -41,82 +41,52 @@ pub const SYSTEM: Pubkey = pubkey!("11111111111111111111111111111111");
 #[path = "v10_tests.rs"]
 mod tests;
 
-fn read<const N: usize>(d: &[u8], offset: usize) -> Result<[u8; N]> {
+pub(crate) fn read<const N: usize>(d: &[u8], offset: usize) -> Result<[u8; N]> {
     d.get(offset..offset + N)
         .ok_or_else(|| anyhow::anyhow!("truncated pool account"))?
         .try_into()
         .map_err(Into::into)
 }
 
-pub fn array_candidates(
-    pool: Pubkey,
-    owner: Pubkey,
-    data: &[u8],
-    radius: u8,
-) -> Result<(Vec<Pubkey>, Option<Pubkey>)> {
-    ensure!(radius <= 2, "array radius must be 0, 1 or 2");
-    let (current, width, seed, bitmap) = match owner {
-        RAYDIUM | CPMM | DAMMV2 | PUMP | METEORA | MANIFEST => return Ok((vec![], None)),
-        CLMM | PANCAKESWAP | BYREAL => {
-            let spacing = u16::from_le_bytes(read(data, 235)?) as i32;
-            ensure!(spacing > 0, "invalid CLMM spacing");
-            (
-                i32::from_le_bytes(read(data, 269)?),
-                spacing * 60,
-                b"tick_array".as_slice(),
-                Some(
-                    Pubkey::find_program_address(
-                        &[b"pool_tick_array_bitmap_extension", pool.as_ref()],
-                        &owner,
-                    )
-                    .0,
-                ),
-            )
-        }
-        WHIRLPOOL => {
-            let spacing = u16::from_le_bytes(read(data, 41)?) as i32;
-            ensure!(spacing > 0, "invalid Whirlpool spacing");
-            (
-                i32::from_le_bytes(read(data, 81)?),
-                spacing * 88,
-                b"tick_array".as_slice(),
-                None,
-            )
-        }
-        DLMM => (
-            i32::from_le_bytes(read(data, 76)?),
-            70,
-            b"bin_array".as_slice(),
-            Some(Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &owner).0),
-        ),
-        _ => bail!("unsupported V10 DEX {}", owner),
+/// Arrays the executor accepts for one concentrated pool, at least one.
+pub const MAX_ARRAYS_PER_POOL: usize = 6;
+
+/// The tick array of a CLMM-fork `pool` under `program` whose first tick is
+/// `start_tick`.
+pub fn clmm_tick_array(pool: Pubkey, program: Pubkey, start_tick: i32) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"tick_array", pool.as_ref(), &start_tick.to_be_bytes()],
+        &program,
+    )
+    .0
+}
+
+/// The tick array of Whirlpool `pool` whose first tick is `start_tick`.
+pub fn whirlpool_tick_array(pool: Pubkey, start_tick: i32) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"tick_array",
+            pool.as_ref(),
+            start_tick.to_string().as_bytes(),
+        ],
+        &WHIRLPOOL,
+    )
+    .0
+}
+
+/// The bin array of DLMM `pool` at array `index`.
+pub fn dlmm_bin_array(pool: Pubkey, index: i64) -> Pubkey {
+    Pubkey::find_program_address(&[b"bin_array", pool.as_ref(), &index.to_le_bytes()], &DLMM).0
+}
+
+/// The bitmap extension of `pool`, for the venues that have one.
+pub fn bitmap_extension(pool: Pubkey, owner: Pubkey) -> Option<Pubkey> {
+    let seed: &[u8] = match owner {
+        CLMM | PANCAKESWAP | BYREAL => b"pool_tick_array_bitmap_extension",
+        DLMM => b"bitmap",
+        _ => return None,
     };
-    let center = current.div_euclid(width);
-    let arrays = (-(radius as i32)..=radius as i32)
-        .map(|offset| {
-            let index = center + offset;
-            if owner == DLMM {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), &(index as i64).to_le_bytes()],
-                    &owner,
-                )
-                .0
-            } else if [CLMM, PANCAKESWAP, BYREAL].contains(&owner) {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), &(index * width).to_be_bytes()],
-                    &owner,
-                )
-                .0
-            } else {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), (index * width).to_string().as_bytes()],
-                    &owner,
-                )
-                .0
-            }
-        })
-        .collect();
-    Ok((arrays, bitmap))
+    Some(Pubkey::find_program_address(&[seed, pool.as_ref()], &owner).0)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -687,8 +657,9 @@ impl PoolAccounts {
             | PoolKeys::Whirlpool { arrays }
             | PoolKeys::Dlmm { arrays, .. } => {
                 ensure!(
-                    !arrays.is_empty() && arrays.len() <= 6,
-                    "V10 requires 1..=6 arrays per concentrated pool"
+                    (1..=MAX_ARRAYS_PER_POOL).contains(&arrays.len()),
+                    "V10 requires 1..={} arrays per concentrated pool",
+                    MAX_ARRAYS_PER_POOL
                 );
                 if owner == DLMM {
                     accounts.push(AccountMeta::new_readonly(

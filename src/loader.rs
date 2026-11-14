@@ -1,13 +1,15 @@
 //! Batched, memoized account reads for building each mint's pools.
 use crate::pump_fees::FeeRecipients;
 use crate::v10::{self as abi, MintAccounts, PoolAccounts};
+use crate::{arrays, clmm};
 use anyhow::{ensure, Context, Result};
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk::{
+    account::Account,
+    pubkey::Pubkey,
+    sysvar::clock::{self, Clock},
+};
 use std::collections::{BTreeSet, HashMap};
-
-/// Arrays loaded on each side of a concentrated pool's active one.
-const ARRAY_RADIUS: u8 = 1;
 
 /// Fetches accounts in batches and memoizes them for one load, so a mint's
 /// pools cost a few round trips instead of one request per account.
@@ -40,18 +42,54 @@ impl<'a> AccountLoader<'a> {
     }
 
     /// Fetches the pools and then, in one more round trip, every account
-    /// their builders read. A pool that is missing or unreadable is left for
-    /// `load_pool` to report.
+    /// their builders read and the arrays their walks reach with the bitmap
+    /// extensions fetched so far. A third, only when a newly fetched
+    /// extension lengthens a walk, fetches the arrays the walks reach beyond
+    /// it. A pool that is missing or unreadable is left for `load_pool` to
+    /// report.
     pub fn prefetch_pools(&mut self, pools: impl IntoIterator<Item = Pubkey>) -> Result<()> {
         let pools: Vec<Pubkey> = pools.into_iter().collect();
         self.prefetch(pools.iter().copied())?;
         let mut reads = Vec::new();
-        for pool in pools {
-            if let Some(state) = self.accounts[&pool].as_ref() {
-                reads.extend(pool_reads(pool, state).unwrap_or_default());
+        for pool in &pools {
+            if let Some(state) = self.accounts[pool].as_ref() {
+                reads.extend(pool_reads(*pool, state).unwrap_or_default());
             }
         }
-        self.prefetch(reads)
+        reads.extend(self.walked_arrays(&pools));
+        self.prefetch(reads)?;
+        let arrays = self.walked_arrays(&pools);
+        self.prefetch(arrays)
+    }
+
+    /// The arrays the fetched `pools`' walks reach with the bitmap extensions
+    /// fetched so far. A CLMM walk before its extension is fetched is a
+    /// prefix of the walk the extension steers.
+    fn walked_arrays(&self, pools: &[Pubkey]) -> Vec<Pubkey> {
+        pools
+            .iter()
+            .filter_map(|pool| {
+                let state = self.accounts[pool].as_ref()?;
+                self.walks(*pool, state).ok()
+            })
+            .flat_map(|walks| walks.concat())
+            .collect()
+    }
+
+    /// `pool`'s walks over the accounts fetched so far.
+    fn walks(&self, pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
+        arrays::array_walks(pool, state, |key| self.fetched(key))
+    }
+
+    /// The account at `key`, if it was fetched and exists.
+    fn fetched(&self, key: &Pubkey) -> Option<&Account> {
+        self.accounts.get(key).and_then(Option::as_ref)
+    }
+
+    /// Whether `key` was fetched and exists under `owner`.
+    fn exists(&self, key: &Pubkey, owner: Pubkey) -> bool {
+        self.fetched(key)
+            .is_some_and(|account| account.owner == owner)
     }
 
     fn account(&mut self, key: Pubkey) -> Result<Option<&Account>> {
@@ -158,39 +196,79 @@ impl<'a> AccountLoader<'a> {
                     base,
                 )
             }
-            _ => {
-                let (candidates, bitmap) =
-                    abi::array_candidates(pool, state.owner, &state.data, ARRAY_RADIUS)?;
-                let exists = |key: &Pubkey| {
-                    self.accounts[key]
-                        .as_ref()
-                        .is_some_and(|a| a.owner == state.owner)
-                };
-                let arrays: Vec<Pubkey> = candidates.into_iter().filter(exists).collect();
-                let bitmap = bitmap.filter(|key| state.owner != abi::DLMM || exists(key));
-                PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &arrays, bitmap)
+            abi::CLMM | abi::PANCAKESWAP | abi::BYREAL => {
+                let clmm = clmm::Pool::decode(pool, &state.data)?;
+                let clock: Clock = self
+                    .get(clock::id())?
+                    .deserialize_data()
+                    .context("invalid clock sysvar")?;
+                clmm.ensure_swappable(state.owner, clock.unix_timestamp)?;
+                let loaded = self.load_concentrated_pool(pool, &state, x, base)?;
+                if state.owner == abi::BYREAL {
+                    self.check_byreal_memo(pool, &loaded)?;
+                }
+                Ok(loaded)
             }
+            abi::WHIRLPOOL | abi::DLMM => self.load_concentrated_pool(pool, &state, x, base),
+            _ => PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &[], None),
         }
+    }
+
+    /// A concentrated pool listing its bitmap extension and each direction's
+    /// walk up to its first array that does not exist.
+    fn load_concentrated_pool(
+        &mut self,
+        pool: Pubkey,
+        state: &Account,
+        x: MintAccounts,
+        base: MintAccounts,
+    ) -> Result<PoolAccounts> {
+        let walks = self.walks(pool, state)?;
+        self.prefetch(walks.concat())?;
+        let arrays = arrays::listed_arrays(&walks, |array| self.exists(array, state.owner));
+        ensure!(
+            !arrays.is_empty(),
+            "pool {pool} has no array where a swap starts"
+        );
+        // A CLMM fork lists its extension's address whether or not it exists;
+        // DLMM's is optional on chain and listed only when it exists.
+        let bitmap = abi::bitmap_extension(pool, state.owner)
+            .filter(|key| state.owner != abi::DLMM || self.exists(key, state.owner));
+        PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &arrays, bitmap)
+    }
+
+    /// Rejects a Byreal pool, listing `loaded`, that lists the memo program
+    /// while its bitmap extension holds no data: the executor rejects the
+    /// whole transaction then. The extension must be prefetched.
+    fn check_byreal_memo(&self, pool: Pubkey, loaded: &PoolAccounts) -> Result<()> {
+        let lists_memo = loaded.accounts().iter().any(|a| a.pubkey == abi::MEMO);
+        let extension_has_data = abi::bitmap_extension(pool, abi::BYREAL)
+            .and_then(|key| self.fetched(&key))
+            .is_some_and(|extension| !extension.data.is_empty());
+        ensure!(
+            !lists_memo || extension_has_data,
+            "Byreal pool {pool} lists the memo program without a bitmap extension"
+        );
+        Ok(())
     }
 }
 
-/// Accounts a pool's builder reads besides the pool: pump's global config,
-/// Meteora DAMM v1's vault A and vault B states, or the arrays around the
-/// active tick plus, for DLMM, the bitmap extension, which is optional on
-/// chain and only listed when it exists.
+/// Accounts a pool's builder reads besides the pool and its arrays: pump's
+/// global config, Meteora DAMM v1's vault A and vault B states, or a
+/// concentrated pool's bitmap extension; a CLMM pool also reads the clock
+/// its opening time is checked against.
 fn pool_reads(pool: Pubkey, state: &Account) -> Result<Vec<Pubkey>> {
-    match state.owner {
-        abi::PUMP => Ok(vec![pump_global_config()]),
-        abi::METEORA => Ok(abi::PoolPair::read(state.owner, &state.data)?
+    Ok(match state.owner {
+        abi::PUMP => vec![pump_global_config()],
+        abi::METEORA => abi::PoolPair::read(state.owner, &state.data)?
             .vaults()
-            .to_vec()),
-        _ => {
-            let (candidates, bitmap) =
-                abi::array_candidates(pool, state.owner, &state.data, ARRAY_RADIUS)?;
-            let bitmap = bitmap.filter(|_| state.owner == abi::DLMM);
-            Ok(candidates.into_iter().chain(bitmap).collect())
-        }
-    }
+            .to_vec(),
+        abi::CLMM | abi::PANCAKESWAP | abi::BYREAL => abi::bitmap_extension(pool, state.owner)
+            .into_iter()
+            .chain([clock::id()])
+            .collect(),
+        owner => abi::bitmap_extension(pool, owner).into_iter().collect(),
+    })
 }
 
 fn pump_global_config() -> Pubkey {

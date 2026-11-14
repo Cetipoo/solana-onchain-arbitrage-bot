@@ -308,10 +308,6 @@ fn meteora_block_orients_vault_accounts_by_declared_pair() {
         request.settlement
     )
     .is_err());
-    assert!(array_candidates(Pubkey::new_unique(), METEORA, &pool, 2)
-        .unwrap()
-        .0
-        .is_empty());
 }
 
 #[test]
