@@ -50,9 +50,10 @@ fn clmm_walks<'a>(
     fetched: impl Fn(&Pubkey) -> Option<&'a Account>,
 ) -> Result<[Vec<Pubkey>; 2]> {
     let clmm = clmm::Pool::decode(pool, &state.data)?;
-    let extension = abi::bitmap_extension(pool, state.owner)
-        .and_then(|key| fetched(&key))
-        .and_then(|account| clmm::Extension::decode(pool, state.owner, account));
+    let extension = fetched(&abi::clmm_bitmap_extension(&pool, &state.owner))
+        .map(|account| clmm::Extension::decode(pool, state.owner, account))
+        .transpose()?
+        .flatten();
     Ok([true, false].map(|zero_for_one| {
         clmm.initialized_starts(extension.as_ref(), zero_for_one)
             .take(ARRAYS_PER_DIRECTION)
@@ -119,15 +120,13 @@ fn dlmm_walks(pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
 }
 
 /// The arrays the pool's bitmaps mark as holding liquidity. A pool flagged
-/// as having a bitmap extension walks nothing until the extension is
-/// `fetched`.
+/// as having a bitmap extension fails until the extension is `fetched`.
 fn dlmm_pro_walks<'a>(
     pool: Pubkey,
     state: &Account,
     fetched: impl Fn(&Pubkey) -> Option<&'a Account>,
 ) -> Result<[Vec<Pubkey>; 2]> {
-    let extension = dlmm_pro::requires_bitmap_extension(&state.data)
-        .then(|| dlmm_pro::bitmap_extension(&pool))
+    let extension = dlmm_pro::flagged_bitmap_extension(&pool, &state.data)
         .and_then(|key| fetched(&key))
         .map(|account| account.data.as_slice());
     dlmm_pro::swap_walks(&pool, &state.data, extension, ARRAYS_PER_DIRECTION)

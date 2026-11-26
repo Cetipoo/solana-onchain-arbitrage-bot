@@ -70,8 +70,13 @@ pub fn bitmap_extension(pool: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &DLMM_PRO).0
 }
 
-pub fn requires_bitmap_extension(data: &[u8]) -> bool {
+fn requires_bitmap_extension(data: &[u8]) -> bool {
     data.get(BITMAP_EXTENSION_INITIALIZED) == Some(&1)
+}
+
+/// The bitmap extension of a pool flagged as having one.
+pub fn flagged_bitmap_extension(pool: &Pubkey, data: &[u8]) -> Option<Pubkey> {
+    requires_bitmap_extension(data).then(|| bitmap_extension(pool))
 }
 
 /// Whether a Token-2022 mint's account names a transfer-hook program. This
@@ -340,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn pools_the_executor_rejects_list_no_arrays() {
+    fn swap_walks_refuse_pools_the_executor_rejects() {
         let key = Pubkey::new_unique();
         let mut data = pool(0, 1, &[0]);
         assert!(swap_walks(&key, &data, None, 2).is_ok());
