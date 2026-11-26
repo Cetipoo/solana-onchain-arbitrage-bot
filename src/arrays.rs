@@ -2,17 +2,18 @@
 //!
 //! The executor picks the swap direction on chain, so a pool lists both
 //! directions' arrays, the price-down direction's first, each in the order
-//! its swap walks them. The executor takes one to `MAX_ARRAYS_PER_POOL`
-//! arrays in any order and sizes the trade to the ones it is given, but
-//! rejects the whole instruction if a listed array holds no account.
+//! its swap walks them. The executor takes one to `MAX_ARRAYS` arrays and
+//! sizes the trade to the ones it is given, but rejects the whole
+//! instruction if a listed array holds no account.
 use crate::clmm;
+use crate::dlmm_pro::{self, DLMM_PRO};
 use crate::v10 as abi;
 use anyhow::{ensure, Result};
 use solana_sdk::{account::Account, pubkey::Pubkey};
 
 /// Arrays each swap direction lists at most.
 const ARRAYS_PER_DIRECTION: usize = 2;
-const _: () = assert!(2 * ARRAYS_PER_DIRECTION <= abi::MAX_ARRAYS_PER_POOL);
+const _: () = assert!(2 * ARRAYS_PER_DIRECTION <= abi::MAX_ARRAYS);
 
 const WHIRLPOOL_DISCRIMINATOR: [u8; 8] = [0x3f, 0x95, 0xd1, 0x0c, 0xe1, 0x80, 0x63, 0x09];
 const WHIRLPOOL_LEN: usize = 653;
@@ -35,6 +36,7 @@ pub(crate) fn array_walks<'a>(
         abi::CLMM | abi::PANCAKESWAP | abi::BYREAL => clmm_walks(pool, state, fetched),
         abi::WHIRLPOOL => whirlpool_walks(pool, state),
         abi::DLMM => dlmm_walks(pool, state),
+        DLMM_PRO => dlmm_pro_walks(pool, state, fetched),
         _ => Ok(Default::default()),
     }
 }
@@ -68,7 +70,10 @@ fn whirlpool_walks(pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
         data.len() >= WHIRLPOOL_LEN && data[..8] == WHIRLPOOL_DISCRIMINATOR,
         "invalid Whirlpool {pool}"
     );
-    let spacing = i32::from(u16::from_le_bytes(abi::read(data, 41)?));
+    let spacing = i32::from(u16::from_le_bytes(abi::read(
+        data,
+        abi::WHIRLPOOL_TICK_SPACING_OFFSET,
+    )?));
     let tick = i32::from_le_bytes(abi::read(data, 81)?);
     ensure!(spacing > 0, "invalid Whirlpool {pool}");
     let width = WHIRLPOOL_TICKS_PER_ARRAY * spacing;
@@ -113,8 +118,25 @@ fn dlmm_walks(pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
     }))
 }
 
+/// The arrays the pool's bitmaps mark as holding liquidity. A pool flagged
+/// as having a bitmap extension walks nothing until the extension is
+/// `fetched`.
+fn dlmm_pro_walks<'a>(
+    pool: Pubkey,
+    state: &Account,
+    fetched: impl Fn(&Pubkey) -> Option<&'a Account>,
+) -> Result<[Vec<Pubkey>; 2]> {
+    let extension = dlmm_pro::requires_bitmap_extension(&state.data)
+        .then(|| dlmm_pro::bitmap_extension(&pool))
+        .and_then(|key| fetched(&key))
+        .map(|account| account.data.as_slice());
+    dlmm_pro::swap_walks(&pool, &state.data, extension, ARRAYS_PER_DIRECTION)
+}
+
 /// The arrays a pool lists: each direction's `walks` up to its first array
-/// that does not `exist`, where its swap stops, without repeats.
+/// that does not `exist`, where its swap stops, without repeats. Each
+/// direction keeps its walk order: a DLMM Pro swap scans the list once and
+/// never returns to an array listed before one it took.
 pub(crate) fn listed_arrays(
     walks: &[Vec<Pubkey>; 2],
     exists: impl Fn(&Pubkey) -> bool,

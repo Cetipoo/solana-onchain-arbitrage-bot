@@ -11,6 +11,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Venue {
     Manifest,
+    /// A Manifest market whose block lists a global account, whose global
+    /// orders the executor fills.
+    ManifestGlobal,
     RaydiumAmm,
     MeteoraDamm,
     Pump,
@@ -20,9 +23,44 @@ pub enum Venue {
     Clmm,
     /// PancakeSwap and Byreal, Raydium CLMM forks with costlier swaps.
     ClmmFork,
+    /// A Byreal pool with swap dynamic fees, traded with `swap_v3_dyn`.
+    ByrealDynamicFee,
     Whirlpool,
     Dlmm,
+    /// A DAMM v2 pool that collects its fees apart from its liquidity.
     Dammv2,
+    /// A DAMM v2 pool that compounds its fees into its reserves
+    /// (`collect_fee_mode` 2), whose swap does more work.
+    Dammv2Compounding,
+    /// A Futarchy Dao's spot pool.
+    Futarchy,
+    /// Hylo's USDC pair: hyUSD minted against USDC, or redeemed for it.
+    HyloUsdc,
+    /// Hylo's Stability Pool: hyUSD deposited for sHYUSD, or withdrawn.
+    HyloStability,
+    /// hyUSD minted against a liquid-staking token Hylo holds, or redeemed
+    /// for it.
+    HyloLst,
+    /// hyUSD minted against an Exo collateral, or redeemed for it.
+    HyloExo,
+    /// xSOL, Hylo's levercoin, minted against a liquid-staking token Hylo
+    /// holds, or redeemed for it.
+    HyloLstLever,
+    /// An Exo pair's levercoin minted against its collateral, or redeemed
+    /// for it.
+    HyloExoLever,
+    /// hyUSD converted to xSOL, or xSOL to hyUSD.
+    HyloLstConvert,
+    /// hyUSD converted to an Exo pair's levercoin, or the levercoin to hyUSD.
+    HyloExoConvert,
+    /// A Meteora DLMM Pro pool: concentrated liquidity whose ticks can also
+    /// hold limit orders.
+    DlmmPro,
+    /// An SPL stake pool's SOL deposit or withdrawal, traded against WSOL.
+    StakePool,
+    /// An Archer market's maker books, which the swap fills by price
+    /// priority and splits pro rata at tied prices.
+    Archer,
 }
 
 /// One venue's work. `select` parses, validates and quotes a pool before the
@@ -31,8 +69,11 @@ pub enum Venue {
 /// segment and `search_crossing` for every one past the first, and `bound`
 /// for each pass of the walk's stop check. `swap` reserves the swap program's
 /// execution and the executor's invoke work around it; `crossing` each tick,
-/// bin or level the swap crosses; `token_2022` is the swap's extra cost per
-/// Token-2022 mint it transfers.
+/// bin or level the swap crosses, or for Archer each maker book's fill after
+/// the first; `token_2022` is the swap's extra cost per Token-2022 mint it
+/// transfers. The `select` of Hylo's venues, the stake pool and DLMM Pro is
+/// CPMM's scaled by the parsing and pricing work measured for each, rounded
+/// up to the hundred.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VenueCost {
     pub select: u32,
@@ -60,6 +101,19 @@ impl Venue {
                 bound: 200,
                 swap: 16_900,
                 crossing: 2_000,
+                token_2022: 8_000,
+            },
+            // The global's single transfer to the market and passing its
+            // accounts add 1,500 to a swap; each global fill about 1,200.
+            Self::ManifestGlobal => VenueCost {
+                select: 2_500,
+                prepare: 800,
+                interval: 1_500,
+                load: 600,
+                search_crossing: 1_000,
+                bound: 200,
+                swap: 19_000,
+                crossing: 3_500,
                 token_2022: 8_000,
             },
             Self::RaydiumAmm => VenueCost {
@@ -95,11 +149,11 @@ impl Venue {
                 crossing: 0,
                 token_2022: 3_000,
             },
-            // V2 quotes like v1. Its swap reserve is v1's less the smallest
-            // saving that warm v1/v2 swaps from identical states measured
-            // against the deployed program: 22,179 CU on 100 sells (rounded
-            // down). Those top-level instructions understate the CPI saving,
-            // which also drops v1's extra accounts.
+            // V2 quotes like v1. Its swap and Token-2022 reserves keep the
+            // costliest replayed v2 sell of each mint class at least 4,300
+            // CU below its reserve, after 2,000 CU of the executor's invoke
+            // work. V2 does more of its own work per Token-2022 mint than the
+            // transfer alone.
             Self::PumpV2 => VenueCost {
                 select: 3_200,
                 prepare: 300,
@@ -107,9 +161,9 @@ impl Venue {
                 load: 500,
                 search_crossing: 0,
                 bound: 150,
-                swap: 60_600,
+                swap: 56_100,
                 crossing: 0,
-                token_2022: 3_000,
+                token_2022: 7_500,
             },
             Self::RaydiumCpmm => VenueCost {
                 select: 3_300,
@@ -122,17 +176,7 @@ impl Venue {
                 crossing: 0,
                 token_2022: 8_500,
             },
-            Self::Clmm => VenueCost {
-                select: 4_300,
-                prepare: 5_000,
-                interval: 3_000,
-                load: 1_500,
-                search_crossing: 3_000,
-                bound: 300,
-                swap: 46_500,
-                crossing: 10_000,
-                token_2022: 8_000,
-            },
+            Self::Clmm => CLMM_COST,
             Self::ClmmFork => VenueCost {
                 select: 5_000,
                 prepare: 4_000,
@@ -141,6 +185,23 @@ impl Venue {
                 search_crossing: 3_000,
                 bound: 300,
                 swap: 59_500,
+                crossing: 10_000,
+                token_2022: 8_000,
+            },
+            // ClmmFork's costs plus the swap-dynamic-fee work, each surcharge
+            // at least a quarter over the most that same-state pairs of plain
+            // and swap_v3_dyn swaps measured against the deployed program:
+            // 2,796 executor CU (price checks and the fee) and 31,580 Byreal
+            // CU. The pairs cross no ticks; Byreal prices the fee once per
+            // swap.
+            Self::ByrealDynamicFee => VenueCost {
+                select: 8_600,
+                prepare: 4_000,
+                interval: 3_000,
+                load: 1_500,
+                search_crossing: 3_000,
+                bound: 300,
+                swap: 99_000,
                 crossing: 10_000,
                 token_2022: 8_000,
             },
@@ -166,21 +227,125 @@ impl Venue {
                 // An upper bound per funded bin, not a typical cost: the
                 // native swap's per-bin fee, price and amount arithmetic
                 // grows with operand width and fee terms, measured up to
-                // 6,703.
-                // A typical bin's 4-6k would let long walks overrun.
+                // 6,703. A typical bin's 4-6k would let long walks overrun.
                 crossing: 6_800,
                 token_2022: 5_600,
             },
+            // The costliest replayed swaps needed 20,255 and, compounding,
+            // 29,116 CU beyond their Token-2022 mints and referral claim,
+            // with about 2,000 CU of the executor's invoke work.
             Self::Dammv2 => VenueCost {
-                select: 3_000,
-                prepare: 800,
+                swap: 21_000,
+                ..DAMMV2_COST
+            },
+            Self::Dammv2Compounding => VenueCost {
+                swap: 29_500,
+                ..DAMMV2_COST
+            },
+            // A constant-product pool the search prices like Raydium's.
+            // Its `spot_swap` cost 38,506 to 38,602 CU in 38 replayed swaps
+            // of one Dao; it transfers only legacy token mints.
+            Self::Futarchy => VenueCost {
+                select: 3_300,
+                prepare: 1_000,
                 interval: 1_300,
                 load: 500,
                 search_crossing: 0,
                 bound: 150,
-                swap: 26_500,
+                swap: 42_000,
                 crossing: 0,
-                token_2022: 6_000,
+                token_2022: 0,
+            },
+            // The swap is the 99th percentile of the costlier direction's
+            // mainnet handler cost, a redemption or a withdrawal, plus the
+            // executor's invoke work, rounded up to the hundred.
+            Self::HyloUsdc => VenueCost {
+                select: 2_900,
+                swap: 64_000,
+                ..ISSUER_COST
+            },
+            Self::HyloStability => VenueCost {
+                select: 3_100,
+                swap: 46_400,
+                ..ISSUER_COST
+            },
+            // As above, except that the costlier direction is a mint, which
+            // no sampled mainnet transaction made: its cost is the costliest
+            // direct mint from a recorded state under LiteSVM.
+            Self::HyloLst => VenueCost {
+                select: 9_500,
+                swap: 61_500,
+                ..ISSUER_COST
+            },
+            Self::HyloExo => VenueCost {
+                select: 9_700,
+                swap: 59_900,
+                ..ISSUER_COST
+            },
+            // As for the USDC pair, the swap is the 99th percentile of the
+            // costlier direction's mainnet handler cost plus the executor's
+            // invoke work: a levercoin mint, or a conversion from hyUSD to
+            // levercoins. Each swap exceeds the costliest direct trade of
+            // that venue from a recorded state under LiteSVM.
+            Self::HyloLstLever => VenueCost {
+                select: 11_700,
+                swap: 60_900,
+                ..ISSUER_COST
+            },
+            Self::HyloExoLever => VenueCost {
+                select: 11_900,
+                swap: 58_100,
+                ..ISSUER_COST
+            },
+            Self::HyloLstConvert => VenueCost {
+                select: 7_900,
+                swap: 58_100,
+                ..ISSUER_COST
+            },
+            Self::HyloExoConvert => VenueCost {
+                select: 8_500,
+                swap: 72_500,
+                ..ISSUER_COST
+            },
+            // The search charges are Raydium CLMM's, which cover DLMM Pro's
+            // measured estimates with more margin than CPMM's charges
+            // cover its own. The swap is the costliest sampled mainnet swap
+            // of legacy mints that crossed no tick plus 2,000 for the
+            // executor's invoke work, the crossing the steepest per-tick cost
+            // fitted on the recorded pools, and a Token-2022 mint a quarter
+            // over the most that a mint's conversion and an active transfer
+            // fee added to same-input swaps. Each is rounded up to the
+            // hundred.
+            Self::DlmmPro => VenueCost {
+                select: 4_900,
+                swap: 38_600,
+                crossing: 4_200,
+                token_2022: 3_900,
+                ..CLMM_COST
+            },
+            // The swap covers the costlier direction, a withdrawal with its
+            // SyncNative and surplus return: its costliest leg under LiteSVM,
+            // and the costliest sampled mainnet handler plus the most a leg
+            // cost beyond its handler, rounded up to the hundred.
+            Self::StakePool => VenueCost {
+                select: 4_200,
+                swap: 26_700,
+                ..ISSUER_COST
+            },
+            // The search charges are Manifest's. The swap covers a one-book
+            // fill, `ARCHER_BOOK_CU` each listed book's admission, and
+            // `crossing` each book's fill after the first, whether at a new
+            // price or a tied one.
+            Self::Archer => VenueCost {
+                select: 2_500,
+                prepare: 800,
+                interval: 1_500,
+                load: 600,
+                search_crossing: 1_000,
+                bound: 200,
+                swap: 30_000,
+                crossing: 4_000,
+                token_2022: 8_000,
             },
         }
     }
@@ -198,6 +363,48 @@ impl Venue {
         }
     }
 }
+
+const CLMM_COST: VenueCost = VenueCost {
+    select: 4_300,
+    prepare: 5_000,
+    interval: 3_000,
+    load: 1_500,
+    search_crossing: 3_000,
+    bound: 300,
+    swap: 46_500,
+    crossing: 10_000,
+    token_2022: 8_000,
+};
+
+/// An issuer's work apart from its selection and swap: Hylo's venues and
+/// the stake pool. The search walks each direction of an issuer as one
+/// linear segment at a rate bounding its quote from above, and issuers
+/// transfer only legacy token mints. Fitted against Raydium CPMM's charges in
+/// the same baskets of Hylo trades.
+const ISSUER_COST: VenueCost = VenueCost {
+    select: 0,
+    prepare: 500,
+    interval: 1_000,
+    load: 500,
+    search_crossing: 0,
+    bound: 150,
+    swap: 0,
+    crossing: 0,
+    token_2022: 0,
+};
+
+/// DAMM v2's work apart from its swap, which its pool's fee collection sets.
+const DAMMV2_COST: VenueCost = VenueCost {
+    select: 3_000,
+    prepare: 800,
+    interval: 1_300,
+    load: 500,
+    search_crossing: 0,
+    bound: 150,
+    swap: 0,
+    crossing: 0,
+    token_2022: 6_000,
+};
 
 /// Entry, instruction decoding, the common accounts and the brand log before
 /// any pool is parsed, and each group's target mint and descriptor.
@@ -272,20 +479,40 @@ pub const fn missing_ata_cu(token_2022: bool, bump: u8) -> u32 {
 pub const TRANSFER_FEE_CU: u32 = 2_700;
 pub const CLMM_EXTENSION_CU: u32 = 33_000;
 pub const ADAPTIVE_ORCA_CU: u32 = 4_200;
+/// An adaptive-fee Whirlpool's search work per segment load, or per interval
+/// of a two-leg route, beyond its venue's: the cursor's fee-group traversal.
+pub const ADAPTIVE_ORCA_LOAD_CU: u32 = 1_500;
 pub const PUMP_MISSING_ACCOUNT_CU: u32 = 27_700;
 pub const PUMP_VOLUME_CU: u32 = 8_000;
 pub const PUMP_BUY_CU: u32 = 12_000;
-/// A v2 buy's extra over its sell: v1's buy reserve less the smallest
-/// measured buy saving (29,053 CU on 100 buys, rounded down), above the v2
-/// sell reserve. The largest measured v2 buy exceeded the largest sell by
-/// 2,379 CU.
+/// A v2 buy's extra over its sell. The costliest replayed buys exceeded the
+/// costliest sells of each mint class by 3,250 to 3,430 CU.
 pub const PUMP_V2_BUY_CU: u32 = 5_100;
-/// A DLMM swap paying our wallet its host share of the protocol fee makes
-/// one more token transfer.
-pub const DLMM_HOST_CLAIM_CU: u32 = 3_500;
+/// A v2 swap of a Token-2022 quote mint beyond its `token_2022`: the swap
+/// transfers its quote to or from the pool and again to the buyback
+/// recipient.
+pub const PUMP_V2_TOKEN_2022_QUOTE_CU: u32 = 4_000;
+/// An Archer swap's admission and scan of each maker book it lists, beyond
+/// its venue's `swap`; the executor reserves each fill past the first at the
+/// venue's `crossing`.
+pub const ARCHER_BOOK_CU: u32 = 2_000;
+/// The executor's validation and admission of each maker book of every
+/// Archer pool a transaction carries, including a deferred bid-reserve
+/// projection over all its levels.
+pub const ARCHER_BOOK_PARSE_CU: u32 = 6_000;
+/// A swap paying our wallet makes one more token transfer: a DLMM host
+/// share of the protocol fee, or a DAMM v2 referral.
+pub const PAYOUT_CLAIM_CU: u32 = 3_500;
 /// A funded DLMM bin holding limit orders also processes them: up to 10,331
 /// CU per bin natively, beyond the crossing's 6,800.
 pub const DLMM_ORDER_BIN_CU: u32 = 3_600;
+
+/// A long route's walk charges 1,400 CU per interval to project a capped
+/// transfer fee on each leg that pays one. The request's
+/// headroom covered three such legs on routes without a crossing allowance,
+/// the most a route converting into a legacy mint has; a fourth needs this.
+const FEE_PROJECTION_CU: u32 = 1_400;
+const HEADROOM_FEE_LEGS: u32 = 3;
 
 impl VenueCost {
     /// The swap's extra work per Token-2022 mint it transfers, and ours.
@@ -366,8 +593,12 @@ pub fn route_work(legs: &[Venue]) -> RouteWork {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Allowance {
     dlmm: u32,
-    /// Raydium CLMM and its forks, and Orca Whirlpool.
+    /// Raydium CLMM and its forks, including Byreal's swap-dynamic-fee pools,
+    /// fixed-fee Orca Whirlpool and DLMM Pro.
     concentrated: u32,
+    /// An adaptive-fee Whirlpool, whose walk also traverses fee groups.
+    adaptive_orca: u32,
+    /// Manifest, with or without globals, and Archer.
     order_book: u32,
     /// Each further leg that crosses ticks, bins or levels.
     extra_leg: u32,
@@ -377,32 +608,43 @@ struct Allowance {
 const SHORT_ALLOWANCE: Allowance = Allowance {
     dlmm: 92_000,
     concentrated: 40_000,
+    adaptive_orca: 40_000,
     order_book: 60_000,
     extra_leg: 20_000,
 };
-/// Longer routes walk each leg's segments.
+/// Longer routes walk each leg's segments, which costs the search about
+/// twice a two-leg interval per bin: the DLMM allowance funds the same ten
+/// bins as a two-leg route's.
 const LONG_ALLOWANCE: Allowance = Allowance {
-    dlmm: 92_000,
+    dlmm: 124_000,
     concentrated: 32_000,
+    // The least swept value at which replayed three-leg routes through an
+    // adaptive Whirlpool kept their unconstrained profit.
+    adaptive_orca: 83_000,
     order_book: 40_000,
     extra_leg: 8_000,
 };
 
 impl Allowance {
-    fn of(&self, venue: Venue) -> Option<u32> {
-        match venue {
+    fn of(&self, leg: &Leg) -> Option<u32> {
+        match leg.venue {
             Venue::Dlmm => Some(self.dlmm),
-            Venue::Clmm | Venue::ClmmFork | Venue::Whirlpool => Some(self.concentrated),
-            Venue::Manifest => Some(self.order_book),
+            Venue::Whirlpool if leg.adaptive_orca => Some(self.adaptive_orca),
+            Venue::Clmm
+            | Venue::ClmmFork
+            | Venue::ByrealDynamicFee
+            | Venue::Whirlpool
+            | Venue::DlmmPro => Some(self.concentrated),
+            Venue::Manifest | Venue::ManifestGlobal | Venue::Archer => Some(self.order_book),
             _ => None,
         }
     }
 
     /// The largest crossing leg's allowance, plus `extra_leg` for each other.
-    fn for_route(&self, legs: &[Venue]) -> u32 {
+    fn for_route(&self, legs: &[Leg]) -> u32 {
         let (largest, count) = legs
             .iter()
-            .filter_map(|&venue| self.of(venue))
+            .filter_map(|leg| self.of(leg))
             .fold((0, 0), |(largest, count), a| (largest.max(a), count + 1));
         largest + self.extra_leg * u32::saturating_sub(count, 1)
     }
@@ -417,6 +659,29 @@ struct Leg {
     /// Whether this direction buys Pump's native base token. Unknown pool
     /// orientation keeps the buy reserve in either route direction.
     pump_buy: Option<bool>,
+    /// Whether a Pump pool's native quote mint is Token-2022.
+    pump_quote_token_2022: bool,
+    /// A Whirlpool whose fee groups the executor's search walks
+    /// (`walks_fee_groups`).
+    adaptive_orca: bool,
+}
+
+/// Whether to fund the executor's fee-group walk through a pool: a Whirlpool
+/// whose `BasketPool::adaptive_fee` is adaptive or unread. The executor walks
+/// fee groups only while an adaptive schedule is active, so this can
+/// over-fund.
+fn walks_fee_groups(venue: Venue, adaptive_fee: Option<bool>) -> bool {
+    venue == Venue::Whirlpool && adaptive_fee != Some(false)
+}
+
+/// Whether a Pump pool between mints `x` and `b` is quoted in a Token-2022
+/// mint. Unknown pool orientation counts either mint.
+const fn pump_quote_token_2022(quote_is_base: Option<bool>, x: bool, b: bool) -> bool {
+    match quote_is_base {
+        Some(true) => b,
+        Some(false) => x,
+        None => x || b,
+    }
 }
 
 /// The client's default converter: the Raydium AMM v4 SOL/USDC pool.
@@ -442,8 +707,10 @@ fn route_cu(legs: &[Leg]) -> u32 {
         .map(|leg| {
             leg.token_2022_mints * leg.venue.cost().token_2022_cu()
                 + match leg.venue {
-                    // Whether the pool pays a host fee we claim is not known here.
-                    Venue::Dlmm => DLMM_HOST_CLAIM_CU,
+                    // Whether the pool pays a host fee or referral we claim
+                    // is not known here.
+                    Venue::Dlmm | Venue::Dammv2 | Venue::Dammv2Compounding => PAYOUT_CLAIM_CU,
+                    Venue::PumpV2 if leg.pump_quote_token_2022 => PUMP_V2_TOKEN_2022_QUOTE_CU,
                     _ => 0,
                 }
         })
@@ -461,6 +728,14 @@ fn route_cu(legs: &[Leg]) -> u32 {
         }
     }
     let pump_buys = buys.max(sells) + unknown;
+    let fee_legs = legs.iter().filter(|leg| leg.token_2022_mints != 0).count() as u32;
+    let fee_projections = if long {
+        fee_legs.saturating_sub(HEADROOM_FEE_LEGS) * FEE_PROJECTION_CU
+    } else {
+        0
+    };
+    let adaptive_orca = legs.iter().filter(|leg| leg.adaptive_orca).count() as u32
+        * (ADAPTIVE_ORCA_CU + ADAPTIVE_ORCA_LOAD_CU);
     let allowance = if long {
         LONG_ALLOWANCE
     } else {
@@ -472,15 +747,20 @@ fn route_cu(legs: &[Leg]) -> u32 {
         + work.execution
         + transfers
         + pump_buys
+        + fee_projections
+        + adaptive_orca
         + work.interval
         + loads
-        + allowance.for_route(venues)
+        + allowance.for_route(legs)
 }
 
 /// Preparing and sizing one interval of another candidate. The executor
-/// ranks candidates by their search estimate and verifies only a trade near
-/// the minimum profit, so no integer verification is added per candidate.
-/// Crossing depth remains covered by the largest route's walking allowance.
+/// ranks most candidates by their search estimate and verifies only a trade
+/// near the minimum profit, so no integer verification is added per
+/// candidate. Fixed-cost routes and routes through an Archer pool are ranked
+/// by their integer quote instead; an Archer quote's level walk, like
+/// crossing depth, draws on the largest route's walking allowance, so a
+/// further Archer candidate sizes only within what that allowance leaves.
 fn candidate_cu(legs: &[Leg]) -> u32 {
     let mut venues = [Venue::RaydiumAmm; 4];
     for (venue, leg) in venues.iter_mut().zip(legs) {
@@ -495,11 +775,15 @@ fn candidate_cu(legs: &[Leg]) -> u32 {
 pub struct BasketPool {
     pub venue: Venue,
     /// Quoted in the settlement mint. Otherwise the route converts through
-    /// the transaction's SOL/USDC converter.
+    /// the basket's converter.
     pub settlement_quoted: bool,
     /// Pump's native quote mint is this pool's route base mint. `None`
     /// preserves the buy reserve when native orientation is unavailable.
     pub pump_quote_is_base: Option<bool>,
+    /// Whether a Whirlpool's state names an adaptive-fee tier: its fee-tier
+    /// index differs from its tick spacing. `None`, for a pool whose state
+    /// was not read, costs a Whirlpool as adaptive. Other venues ignore it.
+    pub adaptive_fee: Option<bool>,
 }
 
 /// One instruction group: with bridges, its intermediate, bridges and direct
@@ -512,28 +796,57 @@ pub struct BasketGroup<'a> {
     pub base_token_2022: bool,
 }
 
+/// The pool a basket converts through, and whether the mint it converts
+/// into, which the basket's crossing pools and converting bridges are quoted
+/// in, is Token-2022. A venue alone converts into a legacy mint, as the
+/// SOL/USDC converter does, and a Whirlpool venue alone is costed as an
+/// adaptive-fee pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Converter {
+    pub venue: Venue,
+    pub quote_token_2022: bool,
+    /// As `BasketPool::adaptive_fee`.
+    pub adaptive_fee: Option<bool>,
+}
+
+impl From<Venue> for Converter {
+    fn from(venue: Venue) -> Self {
+        Self {
+            venue,
+            quote_token_2022: false,
+            adaptive_fee: None,
+        }
+    }
+}
+
 /// CU a transaction needs for the executor to size and execute whichever
 /// route its groups allow at a large trade's size. A pool quoted in the
-/// other settlement mint trades through a SOL/USDC pool of venue
-/// `converter`. Accounts the executor must create are not known here;
-/// callers add `missing_ata_cu` for each. The executor never exceeds its
-/// budget.
-pub fn transaction_cu(groups: &[BasketGroup<'_>], converter: Venue, loan: bool) -> u32 {
+/// conversion's mint trades through `converter`. Accounts the executor must
+/// create and the maker books an Archer pool lists are not known here:
+/// callers add `missing_ata_cu` for each such account, `ARCHER_BOOK_PARSE_CU`
+/// for each book of every Archer pool the transaction carries, and
+/// `ARCHER_BOOK_CU` for each book of the Archer pools of the route with the
+/// most. The executor never exceeds its budget.
+pub fn transaction_cu(
+    groups: &[BasketGroup<'_>],
+    converter: impl Into<Converter>,
+    loan: bool,
+) -> u32 {
     // The executor never exceeds its allowance, but a short one sizes the
     // trade smaller. Request a little more than the fitted need.
     let need = fitted_cu(groups, converter, loan);
     (need + need / HEADROOM_DIVISOR).min(MAX_TRANSACTION_CU)
 }
 
-/// The most `transaction_cu` requests, above the 640k the largest replayed
-/// baskets used; they found the same profit as at 1.4M.
+/// The most `transaction_cu` requests. Every replayed basket whose fit asked
+/// for more used at most 640k and found the same profit as at 1.4M.
 pub const MAX_TRANSACTION_CU: u32 = 700_000;
 
 /// One part in twenty: the 5% headroom `transaction_cu` adds to its fit.
 const HEADROOM_DIVISOR: u32 = 20;
 
 /// The fitted need `transaction_cu` adds headroom to.
-fn fitted_cu(groups: &[BasketGroup<'_>], converter: Venue, loan: bool) -> u32 {
+fn fitted_cu(groups: &[BasketGroup<'_>], converter: impl Into<Converter>, loan: bool) -> u32 {
     let (fit, first_candidate) = fit_and_floor(groups, converter);
     fit.max(first_candidate) + if loan { LOAN_CU } else { 0 }
 }
@@ -544,72 +857,116 @@ fn fitted_cu(groups: &[BasketGroup<'_>], converter: Venue, loan: bool) -> u32 {
 /// the remaining search allowance among its candidates.
 const SIZED_CANDIDATES: usize = 3;
 
-/// Every route the groups allow: each pair of direct pools, crossing through
-/// the converter when one is quoted in the other settlement mint, and each
-/// intermediate, bridge and direct pool of a stock group.
-fn each_route(groups: &[BasketGroup<'_>], converter: Venue, mut visit: impl FnMut(&[Leg])) {
-    let converter_leg = Leg {
-        venue: converter,
-        token_2022_mints: 0,
-        pump_buy: None,
-    };
-    for group in groups {
-        let target = u32::from(group.target_token_2022);
-        let direct = |pool: &BasketPool, base_to_x: bool| Leg {
-            venue: pool.venue,
-            token_2022_mints: target,
-            pump_buy: pool.pump_quote_is_base.map(|quote| quote == base_to_x),
-        };
+/// Every route the groups allow, as its group, its pools' indexes in that
+/// group and whether it trades through the converter: each pair of direct
+/// pools, crossing through the converter when one is quoted in the
+/// conversion's mint, and each intermediate, bridge and direct pool of a
+/// stock group.
+pub fn each_route_pools(groups: &[BasketGroup<'_>], mut visit: impl FnMut(usize, &[usize], bool)) {
+    for (index, group) in groups.iter().enumerate() {
+        let pools = group.pools;
         let directs = if group.bridges == 0 {
-            group.pools
+            0
         } else {
-            &group.pools[(group.bridges + 1).min(group.pools.len())..]
+            (group.bridges + 1).min(pools.len())
         };
-        for (i, a) in directs.iter().enumerate() {
-            for b in &directs[i + 1..] {
+        for a in directs..pools.len() {
+            for b in a + 1..pools.len() {
                 // A direct cycle enters and leaves through the settlement mint.
-                if !a.settlement_quoted && !b.settlement_quoted {
+                if !pools[a].settlement_quoted && !pools[b].settlement_quoted {
                     continue;
                 }
-                let converts = !(a.settlement_quoted && b.settlement_quoted);
-                let legs = [direct(a, true), direct(b, false), converter_leg];
-                visit(&legs[..2 + usize::from(converts)]);
+                let converts = !(pools[a].settlement_quoted && pools[b].settlement_quoted);
+                visit(index, &[a, b], converts);
             }
         }
         if group.bridges == 0 {
             continue;
         }
-        let base = u32::from(group.base_token_2022);
-        let Some((intermediate, rest)) = group.pools.split_first() else {
-            continue;
-        };
-        let (bridges, directs) = rest.split_at(group.bridges.min(rest.len()));
-        for bridge in bridges {
-            for pool in directs {
-                let legs = [
-                    Leg {
-                        venue: intermediate.venue,
-                        token_2022_mints: target + base,
-                        pump_buy: intermediate.pump_quote_is_base.map(|quote| !quote),
-                    },
-                    Leg {
-                        venue: bridge.venue,
-                        token_2022_mints: base,
-                        pump_buy: bridge.pump_quote_is_base.map(|quote| !quote),
-                    },
-                    direct(pool, true),
-                    converter_leg,
-                ];
-                let converts = !bridge.settlement_quoted;
-                visit(&legs[..3 + usize::from(converts)]);
+        for bridge in 1..directs {
+            for pool in directs..pools.len() {
+                visit(index, &[0, bridge, pool], !pools[bridge].settlement_quoted);
             }
         }
     }
 }
 
+/// The legs of each route `each_route_pools` lists.
+fn each_route(
+    groups: &[BasketGroup<'_>],
+    converter: impl Into<Converter>,
+    mut visit: impl FnMut(&[Leg]),
+) {
+    let converter = converter.into();
+    let converter_leg = Leg {
+        venue: converter.venue,
+        token_2022_mints: u32::from(converter.quote_token_2022),
+        pump_buy: None,
+        pump_quote_token_2022: pump_quote_token_2022(None, converter.quote_token_2022, false),
+        adaptive_orca: walks_fee_groups(converter.venue, converter.adaptive_fee),
+    };
+    // A settlement mint is never Token-2022; the conversion's can be.
+    let quote_token_2022 =
+        |pool: &BasketPool| converter.quote_token_2022 && !pool.settlement_quoted;
+    each_route_pools(groups, |index, route, converts| {
+        let group = &groups[index];
+        let target = u32::from(group.target_token_2022);
+        let base = u32::from(group.base_token_2022);
+        let direct = |pool: &BasketPool, base_to_x: bool| Leg {
+            venue: pool.venue,
+            token_2022_mints: target + u32::from(quote_token_2022(pool)),
+            pump_buy: pool.pump_quote_is_base.map(|quote| quote == base_to_x),
+            pump_quote_token_2022: pump_quote_token_2022(
+                pool.pump_quote_is_base,
+                group.target_token_2022,
+                quote_token_2022(pool),
+            ),
+            adaptive_orca: walks_fee_groups(pool.venue, pool.adaptive_fee),
+        };
+        let mut legs = [converter_leg; 4];
+        let count = match *route {
+            [a, b] => {
+                legs[0] = direct(&group.pools[a], true);
+                legs[1] = direct(&group.pools[b], false);
+                2
+            }
+            [intermediate, bridge, pool] => {
+                let (intermediate, bridge) = (&group.pools[intermediate], &group.pools[bridge]);
+                legs[0] = Leg {
+                    venue: intermediate.venue,
+                    token_2022_mints: target + base,
+                    pump_buy: intermediate.pump_quote_is_base.map(|quote| !quote),
+                    pump_quote_token_2022: pump_quote_token_2022(
+                        intermediate.pump_quote_is_base,
+                        group.target_token_2022,
+                        group.base_token_2022,
+                    ),
+                    adaptive_orca: walks_fee_groups(intermediate.venue, intermediate.adaptive_fee),
+                };
+                legs[1] = Leg {
+                    venue: bridge.venue,
+                    token_2022_mints: base + u32::from(quote_token_2022(bridge)),
+                    pump_buy: bridge.pump_quote_is_base.map(|quote| !quote),
+                    pump_quote_token_2022: pump_quote_token_2022(
+                        bridge.pump_quote_is_base,
+                        group.base_token_2022,
+                        quote_token_2022(bridge),
+                    ),
+                    adaptive_orca: walks_fee_groups(bridge.venue, bridge.adaptive_fee),
+                };
+                legs[2] = direct(&group.pools[pool], true);
+                3
+            }
+            _ => unreachable!("routes have two or three pools"),
+        };
+        visit(&legs[..count + usize::from(converts)]);
+    });
+}
+
 /// The routes' fit, and the least a basket with any route needs for the
 /// executor to size a first candidate at all.
-fn fit_and_floor(groups: &[BasketGroup<'_>], converter: Venue) -> (u32, u32) {
+fn fit_and_floor(groups: &[BasketGroup<'_>], converter: impl Into<Converter>) -> (u32, u32) {
+    let converter = converter.into();
     let converts = groups
         .iter()
         .flat_map(|g| g.pools)
@@ -619,14 +976,15 @@ fn fit_and_floor(groups: &[BasketGroup<'_>], converter: Venue) -> (u32, u32) {
         groups
             .iter()
             .flat_map(|g| g.pools.iter().map(|p| p.venue))
-            .chain(converts.then_some(converter)),
-    ) + groups
-        .iter()
-        .map(|g| {
-            (u32::from(g.target_token_2022) + u32::from(g.bridges > 0 && g.base_token_2022))
-                * TOKEN_2022_MINT_CU
-        })
-        .sum::<u32>()
+            .chain(converts.then_some(converter.venue)),
+    ) + u32::from(converts && converter.quote_token_2022) * TOKEN_2022_MINT_CU
+        + groups
+            .iter()
+            .map(|g| {
+                (u32::from(g.target_token_2022) + u32::from(g.bridges > 0 && g.base_token_2022))
+                    * TOKEN_2022_MINT_CU
+            })
+            .sum::<u32>()
         + groups
             .iter()
             .flat_map(|g| g.pools)
@@ -668,7 +1026,7 @@ fn fit_and_floor(groups: &[BasketGroup<'_>], converter: Venue) -> (u32, u32) {
     for venue in groups
         .iter()
         .flat_map(|g| g.pools.iter().map(|p| p.venue))
-        .chain(converts.then_some(converter))
+        .chain(converts.then_some(converter.venue))
     {
         let cost = venue.cost().swap;
         if cost < cheapest[0] {

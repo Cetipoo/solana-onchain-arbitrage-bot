@@ -15,7 +15,7 @@ This repository focuses on **pool parsing and program interaction**, and is inte
 - This repo is a **demo / reference implementation**
 - It shows **how to parse pools and call the on-chain program**
 - It is **not optimized**, **not fully automated**, and **not recommended for beginners**
-- Every transaction pays network fees even when it finds no profit and fails. Each `[[transactions]]` entry sends one every `process_delay_ms`, so the example config, with five entries every 400 ms, pays about 5 SOL a day in base fees alone. Start with one transaction and a longer delay
+- Every transaction pays network fees even when it finds no profit and fails. Each `[[transactions]]` entry sends one every `process_delay_ms`, so the example config, with ten entries every 400 ms, pays about 11 SOL a day in base fees alone. Start with one transaction and a longer delay
 
 ### ✅ Recommended for new users
 
@@ -61,12 +61,17 @@ Use the **full featured production bot** instead:
 - Raydium CPMM
 - Raydium CLMM
 - Meteora DLMM
+- Meteora DLMM Pro (except pools whose Token-2022 mint has a transfer hook)
 - Meteora Dynamic AMM
-- Meteora DAMM V2
-- Orca Whirlpool
+- Meteora DAMM V2, including compounding-fee pools
+- Orca Whirlpool, including adaptive-fee pools
 - PancakeSwap
-- Byreal
-- Manifest
+- Byreal, including swap-dynamic-fee pools priced from Pyth
+- Manifest, including global orders
+- Futarchy spot pools
+- Archer (the bot lists up to 19 of the maker books each market's aggregator admits: the most recently updated, in address order)
+- Hylo: the exchange's hyUSD/USDC pair (`CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS`), its xSOL/hyUSD conversion (`9cd2sAfbBvKs4SX9YKo4dcjwP3TgTVQ8dT5koshGcDND`) and the Stability Pool's sHYUSD/hyUSD (`2jk7miWrsTbt5hUSaCXPkEQPvuUMgbFLpgMzMQw3Z6ar`)
+- SPL Stake Pool SOL deposits and withdrawals, for pools whose mint is a legacy SPL token
 
 ---
 

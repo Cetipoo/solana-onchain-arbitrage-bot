@@ -78,12 +78,9 @@ impl FeeRecipients {
             .zip(accounts)
             .filter_map(|(pair, account)| {
                 let a = account.as_ref()?;
-                (a.owner == self.token_program
-                    && a.data.len() >= 165
-                    && a.data.get(..32) == Some(self.quote.as_ref())
-                    && a.data.get(32..64) == Some(pair.0.as_ref())
-                    && a.data[108] == 1)
-                    .then_some(*pair)
+                (abi::is_initialized_token_account(a, &self.quote, &self.token_program)
+                    && a.data.get(32..64) == Some(pair.0.as_ref()))
+                .then_some(*pair)
             })
             .collect();
         if initialized.is_empty() {

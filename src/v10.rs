@@ -1,10 +1,18 @@
 //! V10 instruction builder for the on-chain arbitrage program.
-use anyhow::{bail, ensure, Result};
+use crate::{
+    archer::{self, ARCHER},
+    dlmm_pro::{self, DLMM_PRO, DLMM_PRO_EVENT_AUTHORITY, DLMM_PRO_POOL_AUTHORITY},
+    hylo::{HyloPool, HYLO_EXCHANGE, HYLO_STABILITY},
+    stake_pool::{StakePool, SPL_STAKE_POOL},
+};
+use anyhow::{bail, ensure, Context, Result};
 use executor_v10_abi::{
-    Group, InstructionData, Venue, MAX_GROUPS, MAX_PAYLOAD_LEN, MAX_POOLS, PUMP_V2_POOL_ACCOUNTS,
+    Group, InstructionData, Venue, ARCHER_MAX_BOOKS, MANIFEST_POOL_ACCOUNTS, MAX_GROUPS,
+    MAX_PAYLOAD_LEN, MAX_POOLS, PUMP_V2_POOL_ACCOUNTS,
 };
 pub use executor_v10_abi::{Header, OPCODE};
 use solana_sdk::{
+    account::Account,
     instruction::{AccountMeta, Instruction},
     pubkey,
     pubkey::Pubkey,
@@ -28,6 +36,14 @@ pub const DAMMV2: Pubkey = pubkey!("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
 /// Meteora DAMM v1 (dynamic pools) and the vault program its swaps deposit into.
 pub const METEORA: Pubkey = pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB");
 pub const METEORA_VAULT: Pubkey = pubkey!("24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi");
+/// MetaDAO's Futarchy program, whose Dao accounts hold a spot pool.
+pub const FUTARCHY: Pubkey = pubkey!("FUTARELBfJfQ8RDGhg1wdhddq1odMAJUePHFuBYfUxKq");
+/// Pyth's push oracle, which keeps the sponsored price feed accounts.
+pub const PYTH_PUSH_ORACLE: Pubkey = pubkey!("pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT");
+/// The Pyth receiver program, which owns the price updates a Byreal
+/// swap-dynamic-fee pool reads.
+pub const PYTH_RECEIVER: Pubkey = pubkey!("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
+const PRICE_UPDATE_DISCRIMINATOR: [u8; 8] = [0x22, 0xf1, 0x23, 0x63, 0x9d, 0x7e, 0xf4, 0xcd];
 
 pub const SOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 pub const USDC: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
@@ -39,7 +55,17 @@ pub const SYSTEM: Pubkey = pubkey!("11111111111111111111111111111111");
 
 #[cfg(test)]
 #[path = "v10_tests.rs"]
-mod tests;
+pub(crate) mod tests;
+
+/// The most tick or bin arrays a concentrated pool's block lists.
+pub const MAX_ARRAYS: usize = 6;
+pub(crate) const WHIRLPOOL_TICK_SPACING_OFFSET: usize = 41;
+const WHIRLPOOL_FEE_TIER_INDEX_OFFSET: usize = 43;
+const FUTARCHY_DAO_DISCRIMINATOR: [u8; 8] = [163, 9, 47, 31, 52, 85, 197, 49];
+/// A DAMM v2 pool's `collect_fee_mode`, and the mode that compounds its fees
+/// into its reserves.
+const DAMMV2_COLLECT_FEE_MODE_OFFSET: usize = 484;
+const DAMMV2_COMPOUNDING_FEE_MODE: u8 = 2;
 
 pub(crate) fn read<const N: usize>(d: &[u8], offset: usize) -> Result<[u8; N]> {
     d.get(offset..offset + N)
@@ -47,9 +73,6 @@ pub(crate) fn read<const N: usize>(d: &[u8], offset: usize) -> Result<[u8; N]> {
         .try_into()
         .map_err(Into::into)
 }
-
-/// Arrays the executor accepts for one concentrated pool, at least one.
-pub const MAX_ARRAYS_PER_POOL: usize = 6;
 
 /// The tick array of a CLMM-fork `pool` under `program` whose first tick is
 /// `start_tick`.
@@ -79,14 +102,41 @@ pub fn dlmm_bin_array(pool: Pubkey, index: i64) -> Pubkey {
     Pubkey::find_program_address(&[b"bin_array", pool.as_ref(), &index.to_le_bytes()], &DLMM).0
 }
 
-/// The bitmap extension of `pool`, for the venues that have one.
+/// Whether pools of `owner` list neither tick or bin arrays nor a bitmap.
+fn lists_no_arrays(owner: Pubkey) -> bool {
+    matches!(
+        owner,
+        RAYDIUM
+            | CPMM
+            | DAMMV2
+            | PUMP
+            | METEORA
+            | MANIFEST
+            | FUTARCHY
+            | HYLO_EXCHANGE
+            | HYLO_STABILITY
+            | SPL_STAKE_POOL
+            | ARCHER
+    )
+}
+
+/// The bitmap extension of a CLMM-fork or DLMM `pool`;
+/// `dlmm_pro::bitmap_extension` derives a DLMM Pro pool's.
 pub fn bitmap_extension(pool: Pubkey, owner: Pubkey) -> Option<Pubkey> {
-    let seed: &[u8] = match owner {
-        CLMM | PANCAKESWAP | BYREAL => b"pool_tick_array_bitmap_extension",
-        DLMM => b"bitmap",
-        _ => return None,
-    };
-    Some(Pubkey::find_program_address(&[seed, pool.as_ref()], &owner).0)
+    match owner {
+        CLMM | PANCAKESWAP | BYREAL => Some(clmm_bitmap_extension(&pool, &owner)),
+        DLMM => Some(Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &DLMM).0),
+        _ => None,
+    }
+}
+
+/// The tick-array bitmap extension of a CLMM, PancakeSwap or Byreal pool.
+pub fn clmm_bitmap_extension(pool: &Pubkey, program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"pool_tick_array_bitmap_extension", pool.as_ref()],
+        program,
+    )
+    .0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -120,30 +170,284 @@ impl MintAccounts {
     }
 }
 
-/// The executor rejects a Manifest market unless its free list holds a node
-/// past the one a resting order would take, so a swap never grows the market.
-fn manifest_has_spare_node(data: &[u8]) -> bool {
-    let node = |index: u32| {
-        let start = 256 + index as usize;
-        (index != u32::MAX && index.is_multiple_of(80))
-            .then(|| data.get(start..start + 80))
-            .flatten()
-    };
-    let link = |index: u32| Some(u32::from_le_bytes(read(node(index)?, 0).ok()?));
-    let Ok(free) = read(data, 176).map(u32::from_le_bytes) else {
-        return false;
-    };
-    link(free).is_some_and(|next| next != free && node(next).is_some())
+/// An SPL token account's base length, which Token-2022 extensions follow,
+/// where it records its state, and the state of an account neither
+/// uninitialized nor frozen.
+const TOKEN_ACCOUNT_LEN: usize = 165;
+const TOKEN_ACCOUNT_STATE_OFFSET: usize = 108;
+const TOKEN_ACCOUNT_INITIALIZED: u8 = 1;
+
+/// Whether `account` is an initialized, unfrozen token account of `mint`
+/// under `token_program`.
+pub(crate) fn is_initialized_token_account(
+    account: &Account,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> bool {
+    account.owner == *token_program
+        && account.data.len() >= TOKEN_ACCOUNT_LEN
+        && account.data[..32] == mint.to_bytes()
+        && account.data[TOKEN_ACCOUNT_STATE_OFFSET] == TOKEN_ACCOUNT_INITIALIZED
 }
 
-/// Canonical mint/vault layout shared by pool discovery and instruction construction.
-/// For Meteora DAMM v1 the vaults are the vault-program accounts, not token accounts.
+/// A mint's Manifest global account, whose deposits back the global orders
+/// of every market of that mint, and the global's vault.
+pub fn manifest_global(mint: &Pubkey) -> [Pubkey; 2] {
+    [b"global".as_slice(), b"global-vault"]
+        .map(|seed| Pubkey::find_program_address(&[seed, mint.as_ref()], &MANIFEST).0)
+}
+
+/// How many of each side's best orders a Manifest market is scanned for
+/// global ones: more than the executor's order-book allowance funds a walk
+/// through.
+const MANIFEST_GLOBAL_SCAN: usize = 32;
+const MANIFEST_NIL: u32 = u32::MAX;
+const MANIFEST_HEADER_LEN: usize = 256;
+/// A node's size; a node's index is its byte offset after the header.
+const MANIFEST_NODE_LEN: usize = 80;
+/// Where a Manifest market records the first node of its free list.
+const MANIFEST_FREE_LIST: usize = 176;
+/// Where a Manifest market records its best bid's and best ask's node.
+const MANIFEST_BEST_BID: usize = 160;
+const MANIFEST_BEST_ASK: usize = 168;
+/// A resting order's type byte in its node, and the type of a global order.
+const MANIFEST_ORDER_TYPE: usize = 57;
+const MANIFEST_GLOBAL_ORDER: u8 = 3;
+
+/// A Manifest market's order, seat and free nodes after its header, read
+/// with bounds, alignment and cycle checks.
+struct ManifestBook<'a>(&'a [u8]);
+
+impl<'a> ManifestBook<'a> {
+    fn node(&self, index: u32) -> Result<&'a [u8]> {
+        ensure!(
+            index.is_multiple_of(MANIFEST_NODE_LEN as u32),
+            "misaligned Manifest node"
+        );
+        let start = MANIFEST_HEADER_LEN + index as usize;
+        self.0
+            .get(start..start + MANIFEST_NODE_LEN)
+            .ok_or_else(|| anyhow::anyhow!("Manifest node out of range"))
+    }
+
+    fn link(&self, index: u32, at: usize) -> Result<u32> {
+        Ok(u32::from_le_bytes(read(self.node(index)?, at)?))
+    }
+
+    /// The next worse order: both sides store their best order at the
+    /// largest tree key. A tree's path holds no more nodes than the market,
+    /// so a longer one cycles.
+    fn predecessor(&self, mut index: u32) -> Result<u32> {
+        let nodes = self.0.len().saturating_sub(MANIFEST_HEADER_LEN) / MANIFEST_NODE_LEN;
+        let left = self.link(index, 0)?;
+        if left != MANIFEST_NIL {
+            index = left;
+            for _ in 0..nodes {
+                let right = self.link(index, 4)?;
+                if right == MANIFEST_NIL {
+                    return Ok(index);
+                }
+                index = right;
+            }
+        } else {
+            for _ in 0..nodes {
+                let parent = self.link(index, 8)?;
+                if parent == MANIFEST_NIL || self.link(parent, 0)? != index {
+                    return Ok(parent);
+                }
+                index = parent;
+            }
+        }
+        bail!("cyclic Manifest order tree")
+    }
+
+    /// Visits the best `MANIFEST_GLOBAL_SCAN` orders of the side whose best
+    /// order `best` records, best first, while `visit` returns true.
+    fn scan(&self, best: usize, mut visit: impl FnMut(&'a [u8]) -> Result<bool>) -> Result<()> {
+        let mut index = u32::from_le_bytes(read(self.0, best)?);
+        for _ in 0..MANIFEST_GLOBAL_SCAN {
+            if index == MANIFEST_NIL || !visit(self.node(index)?)? {
+                break;
+            }
+            index = self.predecessor(index)?;
+        }
+        Ok(())
+    }
+
+    /// The executor rejects a Manifest market unless its free list holds a
+    /// node past the one a resting order would take, so a swap never grows
+    /// the market.
+    fn has_spare_node(&self) -> bool {
+        let Ok(free) = read(self.0, MANIFEST_FREE_LIST).map(u32::from_le_bytes) else {
+            return false;
+        };
+        self.link(free, 0)
+            .is_ok_and(|next| next != free && self.node(next).is_ok())
+    }
+}
+
+/// The mints whose globals back a global order among the best
+/// `MANIFEST_GLOBAL_SCAN` orders of either side of a Manifest market: quote
+/// deposits back bids, base deposits back asks. A global listed for a side
+/// lets the executor fill those orders; without it a global order ends the
+/// walk.
+pub fn manifest_global_mints(data: &[u8]) -> Result<Vec<Pubkey>> {
+    let pair = PoolPair::read(MANIFEST, data)?;
+    let book = ManifestBook(data);
+    let mut mints = Vec::new();
+    for (best, mint) in [
+        (MANIFEST_BEST_BID, pair.mints[1]),
+        (MANIFEST_BEST_ASK, pair.mints[0]),
+    ] {
+        book.scan(best, |order| {
+            let global = order[MANIFEST_ORDER_TYPE] == MANIFEST_GLOBAL_ORDER;
+            if global {
+                mints.push(mint);
+            }
+            Ok(!global)
+        })?;
+    }
+    Ok(mints)
+}
+
+/// Whether a CLMM, DLMM or Whirlpool pool of `owner` trading `x` against
+/// `base` lists the memo program: Whirlpool always, as V2 supports both token
+/// programs and writable oracle accounts, a Byreal swap-dynamic-fee pool
+/// always, as `swap_v3_dyn` takes it, and the others for a Token-2022 mint.
+pub fn lists_memo(
+    owner: Pubkey,
+    x: MintAccounts,
+    base: MintAccounts,
+    swap_dynamic_fee: bool,
+) -> bool {
+    owner == WHIRLPOOL || swap_dynamic_fee || uses_token_2022(x, base)
+}
+
+fn uses_token_2022(x: MintAccounts, base: MintAccounts) -> bool {
+    x.token_program == TOKEN_2022 || base.token_program == TOKEN_2022
+}
+
+/// A Byreal pool's flags byte, and the flag of a swap-dynamic-fee pool.
+const BYREAL_FEE_FLAGS_OFFSET: usize = 1096;
+const BYREAL_SWAP_DYNAMIC_FEE: u8 = 1 << 4;
+/// Where a Byreal pool stores token0's and token1's Pyth feed ids.
+const BYREAL_FEED_ID_OFFSETS: [usize; 2] = [1112, 1144];
+
+/// A Pyth push-oracle price update account and the feed id it must carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PythPriceUpdate {
+    pub account: Pubkey,
+    pub feed: [u8; 32],
+}
+
+impl PythPriceUpdate {
+    /// Fails unless `account`, the account at `self.account`, is a Pyth
+    /// receiver update of `self.feed`.
+    pub fn check(&self, account: &Account) -> Result<()> {
+        let key = self.account;
+        ensure!(
+            account.owner == PYTH_RECEIVER,
+            "Pyth price update {key} is owned by {}",
+            account.owner
+        );
+        let feed = price_update_feed(&account.data)
+            .with_context(|| format!("invalid Pyth price update {key}"))?;
+        ensure!(
+            feed == self.feed,
+            "Pyth price update {key} has another feed"
+        );
+        Ok(())
+    }
+}
+
+/// The feed id of a Pyth receiver `PriceUpdateV2`: after its discriminator
+/// and write authority, a verification level of one byte for `Full` or two
+/// for `Partial`, then the price message, 84 bytes, and the posted slot.
+fn price_update_feed(data: &[u8]) -> Result<[u8; 32]> {
+    ensure!(
+        data.get(..8) == Some(&PRICE_UPDATE_DISCRIMINATOR[..]),
+        "invalid Pyth price update discriminator"
+    );
+    let message = match data.get(40) {
+        Some(0) => 42,
+        Some(1) => 41,
+        _ => bail!("unknown Pyth verification level"),
+    };
+    ensure!(
+        data.len() >= message + 84 + 8,
+        "Pyth price update data too short"
+    );
+    read(data, message)
+}
+
+/// The Pyth price updates a Byreal swap-dynamic-fee pool's `swap_v3_dyn`
+/// reads, token0's then token1's: the push oracle's shard-0 accounts for the
+/// feed ids the pool stores. `None` for a Byreal pool without the flag.
+pub fn byreal_price_updates(data: &[u8]) -> Result<Option<[PythPriceUpdate; 2]>> {
+    if read::<1>(data, BYREAL_FEE_FLAGS_OFFSET)?[0] & BYREAL_SWAP_DYNAMIC_FEE == 0 {
+        return Ok(None);
+    }
+    let update = |offset: usize| -> Result<PythPriceUpdate> {
+        let feed = read::<32>(data, offset)?;
+        let account =
+            Pubkey::find_program_address(&[&0u16.to_le_bytes(), &feed], &PYTH_PUSH_ORACLE).0;
+        Ok(PythPriceUpdate { account, feed })
+    };
+    Ok(Some([
+        update(BYREAL_FEED_ID_OFFSETS[0])?,
+        update(BYREAL_FEED_ID_OFFSETS[1])?,
+    ]))
+}
+
+/// Whether a Whirlpool's state names an adaptive-fee tier, the executor's
+/// test: its fee-tier index differs from its tick spacing. The executor walks
+/// fee groups only while the pool's adaptive-fee schedule is active, so a
+/// pool this reports as fixed-fee is never walked with an adaptive fee.
+fn whirlpool_state_adaptive_fee(data: &[u8]) -> Result<bool> {
+    Ok(read::<2>(data, WHIRLPOOL_TICK_SPACING_OFFSET)?
+        != read::<2>(data, WHIRLPOOL_FEE_TIER_INDEX_OFFSET)?)
+}
+
+fn is_hylo(program: &Pubkey) -> bool {
+    [HYLO_EXCHANGE, HYLO_STABILITY].contains(program)
+}
+
+/// Canonical mint/vault layout shared by pool discovery and instruction
+/// construction. For Meteora DAMM v1 the vaults are the vault-program
+/// accounts, not token accounts; for Hylo and stake pools the issued side's
+/// vault is its mint, whose supply is outstanding, and a stake pool's SOL
+/// side is its reserve stake account.
 pub struct PoolPair {
     pub mints: [Pubkey; 2],
     vaults: [Pubkey; 2],
 }
+
 impl PoolPair {
+    /// An issuer's pair, whose issued side's vault is its mint.
+    pub(crate) fn issued(mints: [Pubkey; 2], vaults: [Pubkey; 2]) -> Self {
+        Self { mints, vaults }
+    }
+
+    /// The pair an account of `program` holding `data` pools; an error for a
+    /// Hylo account that pools several conversions.
     pub fn read(program: Pubkey, data: &[u8]) -> Result<Self> {
+        if is_hylo(&program) {
+            let mut conversions = HyloPool::conversions(&program, data);
+            return match (conversions.next(), conversions.next()) {
+                (Some(hylo), None) => Ok(hylo.pair()),
+                (None, _) => bail!("not the pool of a Hylo conversion the executor trades"),
+                (Some(_), Some(_)) => {
+                    bail!("not the pool of exactly one conversion the executor trades")
+                }
+            };
+        }
+        if program == SPL_STAKE_POOL {
+            return Ok(StakePool::read(data)?.pair());
+        }
+        Self::layout(program, data)
+    }
+
+    fn layout(program: Pubkey, data: &[u8]) -> Result<Self> {
         let (m0, m1, v0, v1) = match program {
             RAYDIUM => (400, 432, 336, 368),
             METEORA => (40, 72, 104, 136),
@@ -153,7 +457,7 @@ impl PoolPair {
             DLMM => (88, 120, 152, 184),
             MANIFEST => {
                 ensure!(
-                    data.len() >= 256
+                    data.len() >= MANIFEST_HEADER_LEN
                         && data[8] == 0
                         && u64::from_le_bytes(read(data, 0)?) == 4859840929024028656,
                     "invalid Manifest market"
@@ -162,6 +466,21 @@ impl PoolPair {
             }
             DAMMV2 => (168, 200, 232, 264),
             PUMP => (43, 75, 139, 171),
+            DLMM_PRO => (8, 40, 72, 104),
+            ARCHER => {
+                ensure!(archer::is_market(data), "invalid Archer market");
+                archer::MARKET_PAIR
+            }
+            FUTARCHY => {
+                // A live proposal splits the Dao's liquidity into spot, pass
+                // and fail pools, which the executor does not trade.
+                ensure!(
+                    data.get(..8) == Some(&FUTARCHY_DAO_DISCRIMINATOR[..])
+                        && data.get(8) == Some(&0),
+                    "not a Futarchy Dao with a single spot pool"
+                );
+                (157, 189, 221, 253)
+            }
             _ => bail!("unsupported V10 DEX {program}"),
         };
         let key = |offset| -> Result<Pubkey> { Ok(Pubkey::new_from_array(read(data, offset)?)) };
@@ -195,22 +514,44 @@ pub enum PoolKeys<'a> {
         config: Pubkey,
         observation: Pubkey,
     },
-    DammV2,
+    DammV2 {
+        /// Whether the pool collects fees by compounding them into its
+        /// liquidity, which the executor quotes as the costlier venue.
+        compounding: bool,
+    },
     Manifest,
+    Futarchy,
     Clmm {
         program: Pubkey,
         config: Pubkey,
         observation: Pubkey,
         bitmap: Pubkey,
         arrays: &'a [Pubkey],
+        /// A Byreal swap-dynamic-fee pool's token0 and token1 Pyth price
+        /// updates, which also list the memo program.
+        pyth: Option<[Pubkey; 2]>,
     },
     Whirlpool {
         arrays: &'a [Pubkey],
+        /// `whirlpool_state_adaptive_fee` of the pool's state; `None` when
+        /// unknown, which the cost model reserves as adaptive.
+        adaptive_fee: Option<bool>,
     },
     Dlmm {
         oracle: Pubkey,
         bitmap: Option<Pubkey>,
         arrays: &'a [Pubkey],
+    },
+    DlmmPro {
+        bitmap: Option<Pubkey>,
+        /// The arrays both directions walk: `arrays::listed_arrays` of
+        /// `dlmm_pro::swap_walks`.
+        arrays: &'a [Pubkey],
+    },
+    Archer {
+        /// The maker books a swap fills from, in the order the aggregator
+        /// splits tied prices: `archer::select_books`.
+        books: &'a [Pubkey],
     },
 }
 impl PoolKeys<'_> {
@@ -218,11 +559,14 @@ impl PoolKeys<'_> {
         match self {
             Self::Raydium => RAYDIUM,
             Self::Cpmm { .. } => CPMM,
-            Self::DammV2 => DAMMV2,
+            Self::DammV2 { .. } => DAMMV2,
             Self::Manifest => MANIFEST,
+            Self::Futarchy => FUTARCHY,
             Self::Clmm { program, .. } => program,
             Self::Whirlpool { .. } => WHIRLPOOL,
             Self::Dlmm { .. } => DLMM,
+            Self::DlmmPro { .. } => DLMM_PRO,
+            Self::Archer { .. } => ARCHER,
         }
     }
 
@@ -231,12 +575,17 @@ impl PoolKeys<'_> {
         match self {
             Self::Raydium => Venue::RaydiumAmm,
             Self::Cpmm { .. } => Venue::RaydiumCpmm,
-            Self::DammV2 => Venue::Dammv2,
+            Self::DammV2 { compounding: true } => Venue::Dammv2Compounding,
+            Self::DammV2 { compounding: false } => Venue::Dammv2,
             Self::Manifest => Venue::Manifest,
+            Self::Futarchy => Venue::Futarchy,
+            Self::Clmm { pyth: Some(_), .. } => Venue::ByrealDynamicFee,
             Self::Clmm { program, .. } if program == CLMM => Venue::Clmm,
             Self::Clmm { .. } => Venue::ClmmFork,
             Self::Whirlpool { .. } => Venue::Whirlpool,
             Self::Dlmm { .. } => Venue::Dlmm,
+            Self::DlmmPro { .. } => Venue::DlmmPro,
+            Self::Archer { .. } => Venue::Archer,
         }
     }
 }
@@ -308,6 +657,9 @@ pub struct PoolAccounts {
     accounts: Vec<AccountMeta>,
     /// Pump's orientation; `None` for every other venue.
     pump_quote_is_base: Option<bool>,
+    /// A Whirlpool's `PoolKeys::Whirlpool::adaptive_fee`; `None` for every
+    /// other venue.
+    whirlpool_adaptive_fee: Option<bool>,
 }
 impl PoolAccounts {
     pub fn from_pump_keys(
@@ -408,6 +760,7 @@ impl PoolAccounts {
             base_mint: base.mint,
             accounts,
             pump_quote_is_base: Some(quote.mint == base.mint),
+            whirlpool_adaptive_fee: None,
         })
     }
 
@@ -494,7 +847,83 @@ impl PoolAccounts {
             base_mint: base.mint,
             accounts,
             pump_quote_is_base: None,
+            whirlpool_adaptive_fee: None,
         })
+    }
+
+    /// An Archer market's block from its state and the maker books to list,
+    /// in the order the aggregator splits tied prices.
+    pub fn from_archer_state(
+        pool: Pubkey,
+        data: &[u8],
+        x: MintAccounts,
+        base: MintAccounts,
+        books: &[Pubkey],
+    ) -> Result<Self> {
+        archer::check_market(&pool, data)?;
+        let vaults = PoolPair::read(ARCHER, data)?.vaults_for(x.mint, base.mint)?;
+        Self::from_keys(pool, x, base, vaults, PoolKeys::Archer { books })
+    }
+
+    /// The conversions of an issuer, Hylo or a stake pool, at `pool`, which
+    /// `program` performs with `block` after the program and declared base
+    /// mint.
+    fn from_issuer(
+        program: Pubkey,
+        pool: Pubkey,
+        block: Vec<AccountMeta>,
+        venue: Venue,
+        x: MintAccounts,
+        base: MintAccounts,
+    ) -> Result<Self> {
+        // Hylo's handlers take one token program for both mints, and the
+        // stake pools the executor trades issue legacy SPL tokens for WSOL.
+        ensure!(
+            x.token_program == TOKEN && base.token_program == TOKEN,
+            "an issuer's mints are legacy SPL tokens"
+        );
+        let mut accounts = vec![
+            AccountMeta::new_readonly(program, false),
+            AccountMeta::new_readonly(base.mint, false),
+        ];
+        accounts.extend(block);
+        Ok(Self {
+            venue,
+            pool,
+            x_mint: x.mint,
+            base_mint: base.mint,
+            accounts,
+            pump_quote_is_base: None,
+            whirlpool_adaptive_fee: None,
+        })
+    }
+
+    /// A Manifest market's block listing the global account and vault of
+    /// each of `mints`, the market's own, whose global orders the executor
+    /// then fills.
+    pub fn with_manifest_globals(mut self, mints: &[Pubkey]) -> Result<Self> {
+        ensure!(
+            self.venue == Venue::Manifest && self.accounts.len() == MANIFEST_POOL_ACCOUNTS,
+            "only a Manifest market without globals takes them"
+        );
+        ensure!(
+            mints
+                .iter()
+                .all(|mint| [self.x_mint, self.base_mint].contains(mint)),
+            "a Manifest market's globals are of its own mints"
+        );
+        ensure!(
+            mints.len() < 2 || (mints.len() == 2 && mints[0] != mints[1]),
+            "a Manifest market takes one global per mint"
+        );
+        for mint in mints {
+            self.accounts
+                .extend(manifest_global(mint).map(|key| AccountMeta::new(key, false)));
+        }
+        if !mints.is_empty() {
+            self.venue = Venue::ManifestGlobal;
+        }
+        Ok(self)
     }
 
     pub fn venue(&self) -> Venue {
@@ -502,6 +931,9 @@ impl PoolAccounts {
     }
     pub fn pump_quote_is_base(&self) -> Option<bool> {
         self.pump_quote_is_base
+    }
+    pub fn whirlpool_adaptive_fee(&self) -> Option<bool> {
+        self.whirlpool_adaptive_fee
     }
     pub fn pool(&self) -> Pubkey {
         self.pool
@@ -541,46 +973,79 @@ impl PoolAccounts {
             owner != METEORA,
             "Meteora DAMM v1 requires from_meteora_state with its vault states"
         );
-        let pair = PoolPair::read(owner, data)?;
-        let [x_vault, base_vault] = pair.vaults_for(x.mint, base.mint)?;
+        ensure!(
+            owner != ARCHER,
+            "Archer requires from_archer_state with its maker books"
+        );
+        if lists_no_arrays(owner) {
+            ensure!(
+                arrays.is_empty() && bitmap.is_none(),
+                "pool does not use arrays"
+            );
+        }
+        if is_hylo(&owner) {
+            let hylo = HyloPool::read(&owner, data, [x.mint, base.mint])?;
+            ensure!(pool == hylo.pool, "{pool} is not Hylo's {}", hylo.pool);
+            let block = hylo.accounts().collect();
+            return Self::from_issuer(owner, pool, block, hylo.venue(), x, base);
+        }
+        if owner == SPL_STAKE_POOL {
+            let block = StakePool::read_trading(data, x, base)?.accounts(pool)?;
+            return Self::from_issuer(owner, pool, block.to_vec(), Venue::StakePool, x, base);
+        }
+        let [x_vault, base_vault] = PoolPair::read(owner, data)?.vaults_for(x.mint, base.mint)?;
         let keys = match owner {
-            RAYDIUM | CPMM | DAMMV2 | MANIFEST => {
+            RAYDIUM => PoolKeys::Raydium,
+            CPMM => PoolKeys::Cpmm {
+                config: key(8)?,
+                observation: key(296)?,
+            },
+            DAMMV2 => PoolKeys::DammV2 {
+                compounding: read::<1>(data, DAMMV2_COLLECT_FEE_MODE_OFFSET)?[0]
+                    == DAMMV2_COMPOUNDING_FEE_MODE,
+            },
+            MANIFEST => {
                 ensure!(
-                    arrays.is_empty() && bitmap.is_none(),
-                    "pool does not use arrays"
+                    ManifestBook(data).has_spare_node(),
+                    "Manifest market {pool} has no spare order node"
                 );
-                match owner {
-                    MANIFEST => {
-                        ensure!(
-                            manifest_has_spare_node(data),
-                            "Manifest market {pool} has no spare order node"
-                        );
-                        PoolKeys::Manifest
-                    }
-                    RAYDIUM => PoolKeys::Raydium,
-                    CPMM => PoolKeys::Cpmm {
-                        config: key(8)?,
-                        observation: key(296)?,
-                    },
-                    _ => PoolKeys::DammV2,
-                }
+                PoolKeys::Manifest
             }
+            FUTARCHY => PoolKeys::Futarchy,
             CLMM | PANCAKESWAP | BYREAL => PoolKeys::Clmm {
                 program: owner,
                 config: key(9)?,
                 observation: key(201)?,
                 bitmap: bitmap.ok_or_else(|| anyhow::anyhow!("CLMM bitmap address required"))?,
                 arrays,
+                pyth: if owner == BYREAL {
+                    byreal_price_updates(data)?.map(|updates| updates.map(|update| update.account))
+                } else {
+                    None
+                },
             },
             WHIRLPOOL => {
                 ensure!(bitmap.is_none(), "Whirlpool has no bitmap extension");
-                PoolKeys::Whirlpool { arrays }
+                PoolKeys::Whirlpool {
+                    arrays,
+                    adaptive_fee: Some(whirlpool_state_adaptive_fee(data)?),
+                }
             }
             DLMM => PoolKeys::Dlmm {
                 oracle: key(552)?,
                 bitmap,
                 arrays,
             },
+            DLMM_PRO => {
+                dlmm_pro::check_tradable(&pool, data)?;
+                ensure!(
+                    bitmap
+                        == dlmm_pro::requires_bitmap_extension(data)
+                            .then(|| dlmm_pro::bitmap_extension(&pool)),
+                    "DLMM Pro bitmap extension does not match its pool flag"
+                );
+                PoolKeys::DlmmPro { bitmap, arrays }
+            }
             _ => bail!("unsupported V10 pool program"),
         };
         Self::from_keys(pool, x, base, [x_vault, base_vault], keys)
@@ -601,7 +1066,6 @@ impl PoolAccounts {
             AccountMeta::new_readonly(owner, false),
             AccountMeta::new_readonly(base.mint, false),
         ];
-        let v2 = x.token_program == TOKEN_2022 || base.token_program == TOKEN_2022;
         match keys {
             PoolKeys::Manifest => {
                 accounts.extend([
@@ -610,8 +1074,65 @@ impl PoolAccounts {
                     AccountMeta::new(base_vault, false),
                 ]);
             }
+            PoolKeys::Futarchy => {
+                // `spot_swap` takes one token program for both mints.
+                ensure!(
+                    !uses_token_2022(x, base),
+                    "V10 Futarchy requires legacy token mints"
+                );
+                accounts.extend([
+                    AccountMeta::new(pool, false),
+                    AccountMeta::new(x_vault, false),
+                    AccountMeta::new(base_vault, false),
+                    AccountMeta::new_readonly(
+                        Pubkey::find_program_address(&[b"__event_authority"], &owner).0,
+                        false,
+                    ),
+                ]);
+            }
+            PoolKeys::DlmmPro { bitmap, arrays } => {
+                ensure!(
+                    !arrays.is_empty() && arrays.len() <= MAX_ARRAYS,
+                    "V10 requires 1..={MAX_ARRAYS} arrays per DLMM Pro pool"
+                );
+                accounts.extend([
+                    AccountMeta::new(pool, false),
+                    AccountMeta::new(x_vault, false),
+                    AccountMeta::new(base_vault, false),
+                    AccountMeta::new(dlmm_pro::oracle(&pool), false),
+                    AccountMeta::new_readonly(DLMM_PRO_POOL_AUTHORITY, false),
+                    AccountMeta::new_readonly(DLMM_PRO_EVENT_AUTHORITY, false),
+                    // The executor passes it to every swap, whatever the
+                    // mints' token programs.
+                    AccountMeta::new_readonly(MEMO, false),
+                ]);
+                accounts.extend(bitmap.map(|key| AccountMeta::new(key, false)));
+                accounts.extend(arrays.iter().map(|&a| AccountMeta::new(a, false)));
+            }
+            PoolKeys::Archer { books } => {
+                ensure!(
+                    (1..=ARCHER_MAX_BOOKS).contains(&books.len()),
+                    "V10 requires 1..={ARCHER_MAX_BOOKS} books per Archer market"
+                );
+                for (index, book) in books.iter().enumerate() {
+                    ensure!(
+                        ![pool, x_vault, base_vault].contains(book)
+                            && !books[..index].contains(book),
+                        "Archer book {book} repeats a listed account"
+                    );
+                }
+                accounts.extend([
+                    AccountMeta::new(pool, false),
+                    AccountMeta::new(x_vault, false),
+                    AccountMeta::new(base_vault, false),
+                ]);
+                accounts.extend(books.iter().map(|&book| AccountMeta::new(book, false)));
+            }
             PoolKeys::Raydium => {
-                ensure!(!v2, "V10 Raydium requires legacy token mints and no arrays");
+                ensure!(
+                    !uses_token_2022(x, base),
+                    "V10 Raydium requires legacy token mints and no arrays"
+                );
                 accounts.extend([
                     AccountMeta::new_readonly(
                         Pubkey::find_program_address(&[b"amm authority"], &owner).0,
@@ -622,7 +1143,7 @@ impl PoolAccounts {
                     AccountMeta::new(base_vault, false),
                 ]);
             }
-            PoolKeys::DammV2 => {
+            PoolKeys::DammV2 { .. } => {
                 accounts.extend([
                     AccountMeta::new_readonly(
                         Pubkey::find_program_address(&[b"__event_authority"], &owner).0,
@@ -654,71 +1175,77 @@ impl PoolAccounts {
                 ]);
             }
             PoolKeys::Clmm { arrays, .. }
-            | PoolKeys::Whirlpool { arrays }
+            | PoolKeys::Whirlpool { arrays, .. }
             | PoolKeys::Dlmm { arrays, .. } => {
                 ensure!(
-                    (1..=MAX_ARRAYS_PER_POOL).contains(&arrays.len()),
-                    "V10 requires 1..={} arrays per concentrated pool",
-                    MAX_ARRAYS_PER_POOL
+                    !arrays.is_empty() && arrays.len() <= MAX_ARRAYS,
+                    "V10 requires 1..={MAX_ARRAYS} arrays per concentrated pool"
                 );
-                if owner == DLMM {
-                    accounts.push(AccountMeta::new_readonly(
-                        Pubkey::find_program_address(&[b"__event_authority"], &DLMM).0,
-                        false,
-                    ));
-                }
-                // Whirlpool V2 supports both token programs and writable oracle accounts.
-                if v2 || owner == WHIRLPOOL {
-                    accounts.push(AccountMeta::new_readonly(MEMO, false));
-                }
-                accounts.push(AccountMeta::new(pool, false));
-                match keys {
+                let (middle, pyth) = match keys {
                     PoolKeys::Clmm {
                         program,
                         config,
                         observation,
                         bitmap,
+                        pyth,
                         ..
                     } => {
                         ensure!(
                             [CLMM, PANCAKESWAP, BYREAL].contains(&program),
                             "unsupported CLMM program"
                         );
-                        accounts.extend([
+                        ensure!(
+                            pyth.is_none() || program == BYREAL,
+                            "only Byreal pools take Pyth price updates"
+                        );
+                        let middle = vec![
                             AccountMeta::new_readonly(config, false),
                             AccountMeta::new(observation, false),
                             AccountMeta::new(bitmap, false),
                             AccountMeta::new(x_vault, false),
                             AccountMeta::new(base_vault, false),
-                        ]);
+                        ];
+                        (middle, pyth)
                     }
                     PoolKeys::Whirlpool { .. } => {
-                        accounts.extend([
-                            AccountMeta::new(
-                                Pubkey::find_program_address(
-                                    &[b"oracle", pool.as_ref()],
-                                    &WHIRLPOOL,
-                                )
-                                .0,
-                                false,
-                            ),
+                        let oracle =
+                            Pubkey::find_program_address(&[b"oracle", pool.as_ref()], &WHIRLPOOL).0;
+                        let middle = vec![
+                            AccountMeta::new(oracle, false),
                             AccountMeta::new(x_vault, false),
                             AccountMeta::new(base_vault, false),
-                        ]);
+                        ];
+                        (middle, None)
                     }
                     PoolKeys::Dlmm { oracle, bitmap, .. } => {
-                        accounts.extend([
+                        let mut middle = vec![
                             AccountMeta::new(x_vault, false),
                             AccountMeta::new(base_vault, false),
                             AccountMeta::new(oracle, false),
-                        ]);
-                        if let Some(bitmap) = bitmap {
-                            accounts.push(AccountMeta::new(bitmap, false));
-                        }
+                        ];
+                        middle.extend(bitmap.map(|bitmap| AccountMeta::new(bitmap, false)));
+                        (middle, None)
                     }
                     _ => unreachable!(),
+                };
+                if owner == DLMM {
+                    accounts.push(AccountMeta::new_readonly(
+                        Pubkey::find_program_address(&[b"__event_authority"], &DLMM).0,
+                        false,
+                    ));
                 }
+                if lists_memo(owner, x, base, pyth.is_some()) {
+                    accounts.push(AccountMeta::new_readonly(MEMO, false));
+                }
+                accounts.push(AccountMeta::new(pool, false));
+                accounts.extend(middle);
                 accounts.extend(arrays.iter().map(|&a| AccountMeta::new(a, false)));
+                if let Some(updates) = pyth {
+                    // swap_v3_dyn requires the Token-2022 program even for
+                    // standard mints.
+                    accounts.push(AccountMeta::new_readonly(TOKEN_2022, false));
+                    accounts.extend(updates.map(|update| AccountMeta::new_readonly(update, false)));
+                }
             }
         }
         Ok(Self {
@@ -728,6 +1255,10 @@ impl PoolAccounts {
             base_mint: base.mint,
             accounts,
             pump_quote_is_base: None,
+            whirlpool_adaptive_fee: match keys {
+                PoolKeys::Whirlpool { adaptive_fee, .. } => adaptive_fee,
+                _ => None,
+            },
         })
     }
 }
