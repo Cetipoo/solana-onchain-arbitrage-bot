@@ -5,6 +5,7 @@ fn pool(venue: Venue) -> BasketPool {
         venue,
         settlement_quoted: true,
         pump_quote_is_base: None,
+        adaptive_fee: Some(false),
     }
 }
 
@@ -36,22 +37,44 @@ fn fit(pools: &[BasketPool], token_2022: bool) -> (u32, u32) {
 #[test]
 fn constant_product_pairs_need_no_crossing_allowance() {
     // Setup 3.5k + 1.5k + quotes 3k + 3.3k + discovery 6k; preparation
-    // 2.1k; execution 10.5k + 200 + swaps 53.8k; the solver's 1.2k setup
-    // and one 2.8k interval.
-    let (routes, first_candidate) = fit(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], false);
-    assert_eq!(routes, 17_300 + 2_100 + 64_500 + 1_200 + 2_800);
+    // 2.1k; execution 10.5k + 200 + swaps 48.3k and the DAMM v2 leg's
+    // payout claim; the solver's 1.2k setup and one 2.8k interval.
+    let (routes, _) = fit(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], false);
+    assert_eq!(
+        routes,
+        17_300 + 2_100 + 59_000 + PAYOUT_CLAIM_CU + 1_200 + 2_800
+    );
+    // A pool that compounds its fees reserves only a costlier swap.
+    let (plain, compounding) = (Venue::Dammv2.cost(), Venue::Dammv2Compounding.cost());
+    assert_eq!(
+        VenueCost {
+            swap: plain.swap,
+            ..compounding
+        },
+        plain
+    );
+    assert_eq!(
+        fit(
+            &[pool(Venue::Dammv2Compounding), pool(Venue::RaydiumCpmm)],
+            false
+        )
+        .0,
+        routes + compounding.swap - plain.swap
+    );
     // The executor must afford a first candidate before it enumerates:
     // setup, two screens, the two swaps, sizing and the execution margin.
-    // A plain two-pool basket needs a little more than its fit.
+    // A plain two-pool basket without a claim needs a little more than
+    // its fit: setup 11.6k + discovery 6k, preparation 2.3k, execution
+    // 10.7k + swaps 45.9k, the solver's setup and one interval.
+    let plain = [pool(Venue::RaydiumAmm), pool(Venue::RaydiumCpmm)];
+    let (routes, first_candidate) = fit(&plain, false);
+    assert_eq!(routes, 17_600 + 2_300 + 56_600 + 1_200 + 2_800);
     assert_eq!(
         first_candidate,
-        11_300 + 2 * SCREEN_CU + 53_800 + FIRST_CANDIDATE_CU + EXECUTION_MARGIN_CU
+        11_600 + 2 * SCREEN_CU + 45_900 + FIRST_CANDIDATE_CU + EXECUTION_MARGIN_CU
     );
     assert!(first_candidate > routes);
-    assert_eq!(
-        direct(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], false),
-        first_candidate
-    );
+    assert_eq!(direct(&plain, false), first_candidate);
     // Pump's quote, derivation, preparation, swap and buy, and its
     // Token-2022 transfer.
     let cpmm = fit(&[pool(Venue::Dammv2), pool(Venue::RaydiumCpmm)], true).0;
@@ -75,15 +98,20 @@ fn pump_v2_reserves_a_cheaper_swap_and_buy_beside_v1_legs() {
     assert_eq!(
         VenueCost {
             swap: v1.swap,
+            token_2022: v1.token_2022,
             ..v2
         },
         v1
     );
     assert!(v2.swap < v1.swap);
+    // A Token-2022 base still leaves a v2 buy below a v1 sell of legacy mints.
+    assert!(v2.swap + v2.token_2022_cu() + PUMP_V2_BUY_CU < v1.swap);
     let leg = |venue, pump_buy| Leg {
         venue,
         token_2022_mints: 0,
         pump_buy: Some(pump_buy),
+        pump_quote_token_2022: false,
+        adaptive_orca: false,
     };
     let route = |a, b| route_cu(&[a, b]);
     // A selling leg buys when the route runs in reverse. The reserve is
@@ -113,6 +141,126 @@ fn pump_v2_reserves_a_cheaper_swap_and_buy_beside_v1_legs() {
         route(leg(Venue::Pump, true), leg(Venue::Pump, false))
             - route(leg(Venue::PumpV2, true), leg(Venue::PumpV2, false)),
         2 * (v1.swap - v2.swap) + PUMP_BUY_CU - PUMP_V2_BUY_CU
+    );
+}
+
+#[test]
+fn pump_v2_reserves_a_token_2022_quote_where_the_pool_is_quoted_in_one() {
+    let request = |bridges: usize, quote_is_base: Option<bool>, target: bool, stock: bool| {
+        let mut pump = pool(Venue::PumpV2);
+        pump.pump_quote_is_base = quote_is_base;
+        // A stock group's intermediate trades the target against the
+        // stock; a direct pool trades it against the settlement mint.
+        let pools = [pump, pool(Venue::Dlmm), pool(Venue::Dlmm)];
+        fitted_cu(
+            &[BasketGroup {
+                bridges,
+                pools: &pools[..if bridges == 0 { 2 } else { 3 }],
+                target_token_2022: target,
+                base_token_2022: stock,
+            }],
+            DEFAULT_CONVERTER,
+            false,
+        )
+    };
+    for (bridges, target, stock, quoted_in_base) in [
+        // The intermediate is quoted in a Token-2022 stock, or target.
+        (1, false, true, true),
+        (1, true, false, false),
+        // An inverted direct pool is quoted in its Token-2022 target.
+        (0, true, false, false),
+    ] {
+        let quoted = request(bridges, Some(quoted_in_base), target, stock);
+        let other = request(bridges, Some(!quoted_in_base), target, stock);
+        assert_eq!(
+            quoted - other,
+            PUMP_V2_TOKEN_2022_QUOTE_CU,
+            "bridges={bridges}"
+        );
+        // An unknown orientation counts either mint.
+        assert_eq!(request(bridges, None, target, stock), quoted);
+    }
+    // Both mints of the same program: every orientation reserves it.
+    for bridges in [0, 1] {
+        let legacy = request(bridges, Some(true), false, false);
+        assert_eq!(request(bridges, Some(false), false, false), legacy);
+        assert_eq!(request(bridges, None, false, false), legacy);
+    }
+    assert_eq!(
+        request(1, Some(true), true, true),
+        request(1, Some(false), true, true)
+    );
+}
+
+#[test]
+fn a_token_2022_conversion_mint_reserves_its_parse_and_transfers() {
+    // A stock route whose bridge is quoted in the conversion's mint:
+    // intermediate, bridge, direct and converter.
+    let mut bridge = pool(Venue::RaydiumCpmm);
+    bridge.settlement_quoted = false;
+    let converting = [pool(Venue::RaydiumCpmm), bridge, pool(Venue::RaydiumCpmm)];
+    let settled = [pool(Venue::RaydiumCpmm); 3];
+    let need_via =
+        |venue: Venue, pools: &[BasketPool], target_token_2022: bool, quote_token_2022: bool| {
+            fitted_cu(
+                &[BasketGroup {
+                    bridges: 1,
+                    pools,
+                    target_token_2022,
+                    base_token_2022: false,
+                }],
+                Converter {
+                    venue,
+                    quote_token_2022,
+                    adaptive_fee: Some(false),
+                },
+                false,
+            )
+        };
+    let need_with = |pools: &[BasketPool], target_token_2022: bool, quote_token_2022: bool| {
+        need_via(Venue::Dlmm, pools, target_token_2022, quote_token_2022)
+    };
+    let need =
+        |pools: &[BasketPool], quote_token_2022: bool| need_with(pools, false, quote_token_2022);
+    // The mint's extensions, and its transfer in the bridge and the
+    // converter legs.
+    assert_eq!(
+        need(&converting, true) - need(&converting, false),
+        TOKEN_2022_MINT_CU
+            + Venue::RaydiumCpmm.cost().token_2022_cu()
+            + Venue::Dlmm.cost().token_2022_cu()
+    );
+    // A venue alone converts into a legacy mint, and a basket that
+    // does not convert reserves nothing for the conversion's mint.
+    assert_eq!(
+        need(&converting, false),
+        fitted_cu(
+            &[BasketGroup {
+                bridges: 1,
+                pools: &converting,
+                target_token_2022: false,
+                base_token_2022: false,
+            }],
+            Venue::Dlmm,
+            false
+        )
+    );
+    assert_eq!(need(&settled, true), need(&settled, false));
+    // Beside a Token-2022 target, the conversion's mint makes all four
+    // legs transfer one: the walk's fee projection on the fourth.
+    assert_eq!(
+        need_with(&converting, true, true) - need_with(&converting, true, false),
+        need(&converting, true) - need(&converting, false) + FEE_PROJECTION_CU
+    );
+    // A Pump v2 converter of unknown orientation may be quoted in that
+    // mint, which the executor charges on any leg.
+    assert_eq!(
+        need_via(Venue::PumpV2, &converting, false, true)
+            - need_via(Venue::PumpV2, &converting, false, false),
+        TOKEN_2022_MINT_CU
+            + Venue::RaydiumCpmm.cost().token_2022_cu()
+            + Venue::PumpV2.cost().token_2022_cu()
+            + PUMP_V2_TOKEN_2022_QUOTE_CU
     );
 }
 
@@ -199,6 +347,72 @@ fn the_execution_margins_cover_the_safety_and_wrapper_work() {
         (35_400, 6_800, 5_600)
     );
     assert_eq!(Venue::ClmmFork.cost().swap, 59_500);
+    // A swap-dynamic-fee pool costs a plain fork's work plus surcharges at
+    // least a quarter over the measured 2,796 executor CU in selection and
+    // 31,580 Byreal CU in the swap.
+    let (fork, dynamic) = (Venue::ClmmFork.cost(), Venue::ByrealDynamicFee.cost());
+    assert_eq!(
+        VenueCost {
+            select: fork.select,
+            swap: fork.swap,
+            ..dynamic
+        },
+        fork
+    );
+    assert!(4 * (dynamic.select - fork.select) >= 5 * 2_796);
+    assert!(4 * (dynamic.swap - fork.swap) >= 5 * 31_580);
+}
+
+#[test]
+fn each_crossing_venue_draws_its_walks_allowance() {
+    let allowance = Allowance {
+        dlmm: 1,
+        concentrated: 2,
+        adaptive_orca: 3,
+        order_book: 4,
+        extra_leg: 0,
+    };
+    let of = |venue, adaptive_orca| {
+        allowance.of(&Leg {
+            venue,
+            token_2022_mints: 0,
+            pump_buy: None,
+            pump_quote_token_2022: false,
+            adaptive_orca,
+        })
+    };
+    let cases = [
+        (Venue::Dlmm, false, Some(1)),
+        (Venue::Clmm, false, Some(2)),
+        (Venue::ClmmFork, false, Some(2)),
+        (Venue::ByrealDynamicFee, false, Some(2)),
+        (Venue::Whirlpool, false, Some(2)),
+        (Venue::DlmmPro, false, Some(2)),
+        (Venue::Whirlpool, true, Some(3)),
+        (Venue::Manifest, false, Some(4)),
+        (Venue::ManifestGlobal, false, Some(4)),
+        (Venue::Archer, false, Some(4)),
+        (Venue::RaydiumAmm, false, None),
+        (Venue::MeteoraDamm, false, None),
+        (Venue::Pump, false, None),
+        (Venue::PumpV2, false, None),
+        (Venue::RaydiumCpmm, false, None),
+        (Venue::Dammv2, false, None),
+        (Venue::Dammv2Compounding, false, None),
+        (Venue::Futarchy, false, None),
+        (Venue::HyloUsdc, false, None),
+        (Venue::HyloStability, false, None),
+        (Venue::HyloLst, false, None),
+        (Venue::HyloExo, false, None),
+        (Venue::HyloLstLever, false, None),
+        (Venue::HyloExoLever, false, None),
+        (Venue::HyloLstConvert, false, None),
+        (Venue::HyloExoConvert, false, None),
+        (Venue::StakePool, false, None),
+    ];
+    for (venue, adaptive_orca, expected) in cases {
+        assert_eq!(of(venue, adaptive_orca), expected, "{venue:?}");
+    }
 }
 
 #[test]
@@ -317,6 +531,8 @@ fn the_costliest_route_and_every_quote_set_the_limit() {
         venue,
         token_2022_mints: 0,
         pump_buy: None,
+        pump_quote_token_2022: false,
+        adaptive_orca: false,
     };
     // Its quote, and discovery stays at its 10k floor for six screens.
     assert_eq!(
@@ -366,6 +582,8 @@ fn conversions_and_bridges_route_through_longer_cycles() {
         venue,
         token_2022_mints: 0,
         pump_buy: None,
+        pump_quote_token_2022: false,
+        adaptive_orca: false,
     });
     // The only route's sizing is included in its own allowance.
     assert_eq!(
@@ -375,4 +593,43 @@ fn conversions_and_bridges_route_through_longer_cycles() {
             + DISCOVERY_CU
             + route_cu(&legs)
     );
+}
+
+#[test]
+fn an_adaptive_whirlpool_funds_its_fee_group_walk() {
+    let leg = |venue, adaptive_orca| Leg {
+        venue,
+        token_2022_mints: 0,
+        pump_buy: None,
+        pump_quote_token_2022: false,
+        adaptive_orca,
+    };
+    let extra = |others: &[Venue]| {
+        let route = |adaptive| {
+            let mut legs = [leg(Venue::RaydiumAmm, false); 4];
+            legs[0] = leg(Venue::Whirlpool, adaptive);
+            for (slot, &venue) in legs[1..].iter_mut().zip(others) {
+                *slot = leg(venue, false);
+            }
+            route_cu(&legs[..1 + others.len()])
+        };
+        route(true) - route(false)
+    };
+    // Its 4,200 execution reserve and 1,500 per load; a two-leg route's
+    // walking allowance is the concentrated 40,000.
+    assert_eq!(extra(&[Venue::RaydiumCpmm]), 4_200 + 1_500);
+    // A longer route's allowance rises from 32,000 to 83,000 when the
+    // Whirlpool is its largest crossing leg, and not beside a DLMM leg.
+    assert_eq!(
+        extra(&[Venue::RaydiumCpmm, Venue::RaydiumAmm]),
+        4_200 + 1_500 + 51_000
+    );
+    assert_eq!(extra(&[Venue::Dlmm, Venue::RaydiumAmm]), 4_200 + 1_500);
+    // A Whirlpool without its state is costed as adaptive.
+    assert!(walks_fee_groups(Venue::Whirlpool, None));
+    assert!(walks_fee_groups(Venue::Whirlpool, Some(true)));
+    assert!(!walks_fee_groups(Venue::Whirlpool, Some(false)));
+    assert!(!walks_fee_groups(Venue::Clmm, Some(true)));
+    assert!(!walks_fee_groups(DEFAULT_CONVERTER, None));
+    assert_eq!(Converter::from(Venue::Whirlpool).adaptive_fee, None);
 }

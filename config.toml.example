@@ -91,3 +91,52 @@ direct = ["EYErUp5muPYEEkeaUCY22JibeZX7E9UuMcJFZkmNAN7c"]       # Raydium V4 JUP
 intermediate = "DVa7Qmb5ct9RCpaU7UTpSaf3GVMYz17vNVU67XpdCRut" # Raydium V4 RAY/USDT
 bridges = ["22HUWiJaTNph96KQTKZVy2wg8KzfCems5nyW7E5H5J6w"]    # PancakeSwap USDT/SOL
 direct = ["2AXXcN6oN9bBT5owwmTH53C7QHUXvhLeu718Kqt8rvY2"]       # Raydium CLMM RAY/SOL
+
+# 2 hops: SOL -> jitoSOL -> SOL, where the stake pool issues jitoSOL for SOL
+# and redeems it for SOL from its reserve.
+[[transactions]]
+settlement = "SOL"
+[[transactions.direct]]
+pools = [
+    "Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb", # SPL Stake Pool jitoSOL/SOL
+    "Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp", # Orca Whirlpool jitoSOL/SOL
+    "BoeMUkCLHchTD31HdXsbDExuZZfcUppSLpYtV3LZTH6U", # Meteora DLMM jitoSOL/SOL
+]
+
+# 2 hops: USDC -> USDT -> USDC. The bot lists the Archer market's maker books.
+[[transactions]]
+settlement = "USDC"
+[[transactions.direct]]
+pools = [
+    "2Tk1fXG1RuEAqqttVWj2DLXSHabb6QvsTJDFqFZa1uT2", # Archer USDT/USDC
+    "2BDqjWftjXUDUKQnbtJG8bQSHkY1mXhgvoWSmJ5HEDQe", # Meteora DLMM Pro USDC/USDT
+    "4sC7TFsmHodm4sfFFBcKXKbL1K2V5pav52zAiokufnQy", # PancakeSwap USDT/USDC
+]
+
+# Two USDC-settled tokens: META on its Futarchy spot pool, and hyUSD minted
+# for USDC or redeemed for it on the Hylo exchange.
+[[transactions]]
+settlement = "USDC"
+[[transactions.direct]]
+pools = [
+    "CUPoiqkK4hxyCiJcLC4yE9AtJP1MoV1vFV2vx3jqwWeS", # Futarchy META/USDC
+    "9JbJHAxgfJ7iedEde1pD2haqMJZ4Z4n3FcbroB2nZJT3", # Meteora DLMM META/USDC
+]
+[[transactions.direct]]
+pools = [
+    "CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS", # Hylo hyUSD/USDC
+    "4tJW2axbTxtT6nKbjB5pZwePtW84cB7E1B6tdCCLGfrC", # Orca Whirlpool hyUSD/USDC
+]
+
+# 4 hops through Hylo: SOL -> xSOL -> hyUSD -> USDC -> SOL, or
+# SOL -> sHYUSD -> hyUSD -> USDC -> SOL through the Stability Pool.
+[[transactions]]
+settlement = "SOL"
+[[transactions.triangle]]
+intermediate = "9cd2sAfbBvKs4SX9YKo4dcjwP3TgTVQ8dT5koshGcDND" # Hylo xSOL/hyUSD
+bridges = ["CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS"]    # Hylo hyUSD/USDC
+direct = ["5ht3AsCvksCLMp6Zcjf7zaLUsD1ripKMA7jAwgvDAes8"]       # Orca Whirlpool xSOL/SOL
+[[transactions.triangle]]
+intermediate = "2jk7miWrsTbt5hUSaCXPkEQPvuUMgbFLpgMzMQw3Z6ar" # Hylo Stability Pool sHYUSD/hyUSD
+bridges = ["CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS"]    # Hylo hyUSD/USDC
+direct = ["8cq1iHS25zc9b7XmTyHUqjk7DRjHBqJcM6x9Tt2XJnTu"]       # Orca Whirlpool sHYUSD/SOL

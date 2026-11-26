@@ -1,12 +1,15 @@
 //! Configured transactions: each pool's role checked against its mints at
 //! startup, then the V10 instruction built from fresh chain state.
+use crate::archer;
 use crate::config::{DirectConfig, TransactionConfig, TriangleConfig};
 use crate::loader::AccountLoader;
 use crate::v10::{
     self as abi, ConversionAccounts, DirectGroup, MarketGroup, MintAccounts, PoolAccounts,
 };
 use anyhow::{bail, ensure, Context, Result};
-use executor_v10_abi::cost::{transaction_cu, BasketGroup, BasketPool, DEFAULT_CONVERTER};
+use executor_v10_abi::cost::{
+    each_route_pools, transaction_cu, BasketGroup, BasketPool, DEFAULT_CONVERTER,
+};
 use executor_v10_abi::MAX_GROUPS;
 use solana_sdk::{instruction::Instruction, pubkey, pubkey::Pubkey};
 use std::fmt;
@@ -474,6 +477,7 @@ impl Basket {
                         venue: pool.venue(),
                         settlement_quoted: converted != Some(pool.base_mint()),
                         pump_quote_is_base: pool.pump_quote_is_base(),
+                        adaptive_fee: pool.whirlpool_adaptive_fee(),
                     })
                     .collect()
             })
@@ -494,6 +498,7 @@ impl Basket {
             .as_ref()
             .map_or(DEFAULT_CONVERTER, |c| c.pool.venue());
         transaction_cu(&groups, converter, self.header.use_flashloan)
+            + archer_book_cu(&shapes, &groups)
     }
 
     /// The executor instruction with `compute_unit_limit` for the executor.
@@ -539,10 +544,171 @@ impl Basket {
     }
 }
 
+/// The Archer book work `transaction_cu` leaves to its caller: admitting the
+/// books of every pool the transaction lists, and filling those of the route
+/// with the most, which is all a transaction executes. `groups` are the
+/// `shapes`' costs, in the same order.
+fn archer_book_cu(shapes: &[Shape<'_>], groups: &[BasketGroup<'_>]) -> u32 {
+    let parse_cu = archer::parse_cu(
+        shapes
+            .iter()
+            .flat_map(|shape| shape.pools.iter().copied())
+            .map(PoolAccounts::accounts),
+    );
+    let mut most = 0;
+    each_route_pools(groups, |group, pools, _| {
+        let route = pools
+            .iter()
+            .map(|&pool| archer::swap_cu(shapes[group].pools[pool].accounts()))
+            .sum::<u32>();
+        most = most.max(route);
+    });
+    parse_cu + most
+}
+
 fn platform_collector(settlement: Pubkey) -> Pubkey {
     if settlement == abi::USDC {
         pubkey!("GzVRuLF349u78FHpr8KbqMhrZ1aDxnhSF59JWiZ6tbgt")
     } else {
         pubkey!("GPpkDpzCDmYJY5qNhYmM14c7rct1zmkjWc2CjR5g7RZ1")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::v10::PoolKeys;
+    use executor_v10_abi::cost::{ARCHER_BOOK_CU, ARCHER_BOOK_PARSE_CU};
+
+    fn mint(wallet: Pubkey, mint: Pubkey) -> MintAccounts {
+        MintAccounts::ata(&wallet, mint, abi::TOKEN).unwrap()
+    }
+
+    fn basket(
+        wallet: Pubkey,
+        target: MintAccounts,
+        pools: Vec<PoolAccounts>,
+        conversion: Option<ConversionAccounts>,
+    ) -> Basket {
+        Basket {
+            wallet,
+            settlement: mint(wallet, abi::SOL),
+            header: abi::Header::default(),
+            additional_fee_collector: None,
+            conversion,
+            groups: Groups::Direct(vec![DirectGroup { target, pools }]),
+        }
+    }
+
+    fn archer(x: MintAccounts, base: MintAccounts, books: usize) -> PoolAccounts {
+        let books: Vec<_> = (0..books).map(|_| Pubkey::new_unique()).collect();
+        PoolAccounts::from_keys(
+            Pubkey::new_unique(),
+            x,
+            base,
+            [Pubkey::new_unique(), Pubkey::new_unique()],
+            PoolKeys::Archer { books: &books },
+        )
+        .unwrap()
+    }
+
+    fn cpmm(x: MintAccounts, base: MintAccounts) -> PoolAccounts {
+        PoolAccounts::from_keys(
+            Pubkey::new_unique(),
+            x,
+            base,
+            [Pubkey::new_unique(), Pubkey::new_unique()],
+            PoolKeys::Cpmm {
+                config: Pubkey::new_unique(),
+                observation: Pubkey::new_unique(),
+            },
+        )
+        .unwrap()
+    }
+
+    /// Every listed book is parsed, but only the books of the route with the
+    /// most swap work are swapped.
+    #[test]
+    fn archer_books_cost_their_parse_everywhere_and_swaps_on_one_route() {
+        let wallet = Pubkey::new_unique();
+        let target = mint(wallet, Pubkey::new_unique());
+        let (sol, usdc) = (mint(wallet, abi::SOL), mint(wallet, abi::USDC));
+        let settled = |books: [usize; 3]| {
+            let pools = books.map(|books| archer(target, sol, books)).to_vec();
+            basket(wallet, target, pools, None).executor_cu()
+        };
+        // Pools of 6 and 3 books are the costliest pair.
+        assert_eq!(
+            settled([2, 6, 3]),
+            settled([1, 1, 1]) + (9 - 2) * ARCHER_BOOK_CU + (11 - 3) * ARCHER_BOOK_PARSE_CU
+        );
+        let converted = |books: [usize; 3]| {
+            let pools = vec![
+                archer(target, sol, books[0]),
+                archer(target, sol, books[1]),
+                archer(target, usdc, books[2]),
+            ];
+            let conversion = ConversionAccounts {
+                quote: usdc,
+                pool: cpmm(usdc, sol),
+            };
+            basket(wallet, target, pools, Some(conversion)).executor_cu()
+        };
+        // The 6-book pool crossing through the 4-book USDC pool outweighs
+        // the two settled pools' 8.
+        assert_eq!(
+            converted([2, 6, 4]),
+            converted([1; 3]) + (10 - 2) * ARCHER_BOOK_CU + (12 - 3) * ARCHER_BOOK_PARSE_CU
+        );
+    }
+
+    /// A compounding pool's swap costs 8,500 CU more, plus a twentieth of
+    /// headroom.
+    #[test]
+    fn a_compounding_damm_v2_pool_reserves_its_costlier_swap() {
+        let wallet = Pubkey::new_unique();
+        let target = mint(wallet, Pubkey::new_unique());
+        let sol = mint(wallet, abi::SOL);
+        let cu = |compounding| {
+            let pool = PoolAccounts::from_keys(
+                Pubkey::new_unique(),
+                target,
+                sol,
+                [Pubkey::new_unique(), Pubkey::new_unique()],
+                PoolKeys::DammV2 { compounding },
+            )
+            .unwrap();
+            basket(wallet, target, vec![pool, cpmm(target, sol)], None).executor_cu()
+        };
+        assert_eq!(cu(true), cu(false) + 8_500 + 425);
+    }
+
+    /// An adaptive-fee Whirlpool's walk also loads and traverses its fee
+    /// groups: 4,200 + 1,500 CU, plus headroom.
+    #[test]
+    fn an_adaptive_fee_whirlpool_reserves_its_fee_group_walk() {
+        let wallet = Pubkey::new_unique();
+        let target = mint(wallet, Pubkey::new_unique());
+        let sol = mint(wallet, abi::SOL);
+        let arrays = [Pubkey::new_unique()];
+        let cu = |adaptive_fee| {
+            let pool = PoolAccounts::from_keys(
+                Pubkey::new_unique(),
+                target,
+                sol,
+                [Pubkey::new_unique(), Pubkey::new_unique()],
+                PoolKeys::Whirlpool {
+                    arrays: &arrays,
+                    adaptive_fee,
+                },
+            )
+            .unwrap();
+            basket(wallet, target, vec![pool, cpmm(target, sol)], None).executor_cu()
+        };
+        let fixed = cu(Some(false));
+        // A pool whose fee is unknown is costed as adaptive.
+        for adaptive_fee in [Some(true), None] {
+            assert_eq!(cu(adaptive_fee), fixed + 5_700 + 285, "{adaptive_fee:?}");
+        }
     }
 }

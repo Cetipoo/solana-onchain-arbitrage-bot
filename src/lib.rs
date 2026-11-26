@@ -1,8 +1,12 @@
+pub mod archer;
 pub mod ata;
 pub mod bot;
 pub mod config;
+pub mod dlmm_pro;
+pub mod hylo;
 pub mod loader;
 mod pump_fees;
 pub mod route;
+pub mod stake_pool;
 pub mod transaction;
 pub mod v10;
