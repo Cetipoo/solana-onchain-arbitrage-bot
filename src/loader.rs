@@ -3,6 +3,7 @@ use crate::archer::{self, ARCHER};
 use crate::dlmm_pro::{self, DLMM_PRO};
 use crate::pump_fees::FeeRecipients;
 use crate::v10::{self as abi, MintAccounts, PoolAccounts};
+use crate::{arrays, clmm};
 use anyhow::{bail, ensure, Context, Result};
 use solana_client::{
     rpc_client::RpcClient,
@@ -15,9 +16,6 @@ use solana_sdk::{
     sysvar::{self, clock, last_restart_slot::ID as LAST_RESTART_SLOT},
 };
 use std::collections::{BTreeSet, HashMap};
-
-/// Arrays loaded on each side of a concentrated pool's active one.
-const ARRAY_RADIUS: u8 = 1;
 
 /// Fetches accounts in batches and memoizes them for one load, so a mint's
 /// pools cost a few round trips instead of one request per account.
@@ -52,9 +50,12 @@ impl<'a> AccountLoader<'a> {
         Ok(())
     }
 
-    /// Fetches the pools, every account their builders read, and then the
-    /// arrays a DLMM Pro pool's bitmaps select. A pool that is missing or
-    /// unreadable is left for `load_pool` to report.
+    /// Fetches the pools and then, in one more round trip, every account
+    /// their builders read and the arrays their walks reach with the bitmap
+    /// extensions fetched so far. A third, only when a newly fetched
+    /// extension lengthens or starts a walk, fetches the arrays the walks
+    /// reach beyond it. A pool that is missing or unreadable is left for
+    /// `load_pool` to report.
     pub fn prefetch_pools(&mut self, pools: impl IntoIterator<Item = Pubkey>) -> Result<()> {
         let pools: Vec<Pubkey> = pools.into_iter().collect();
         self.prefetch(pools.iter().copied())?;
@@ -64,17 +65,40 @@ impl<'a> AccountLoader<'a> {
                 reads.extend(pool_reads(*pool, state).unwrap_or_default());
             }
         }
+        reads.extend(self.walked_arrays(&pools));
         self.prefetch(reads)?;
-        let mut arrays = Vec::new();
-        for pool in &pools {
-            if let Some(state) = self.accounts[pool].as_ref() {
-                if state.owner == DLMM_PRO {
-                    let walks = self.dlmm_pro_walks(*pool, state);
-                    arrays.extend(walks.map(|walks| walks.concat()).unwrap_or_default());
-                }
-            }
-        }
+        let arrays = self.walked_arrays(&pools);
         self.prefetch(arrays)
+    }
+
+    /// The arrays the fetched `pools`' walks reach with the bitmap extensions
+    /// fetched so far. A CLMM walk before its extension is fetched is a
+    /// prefix of the walk the extension steers.
+    fn walked_arrays(&self, pools: &[Pubkey]) -> Vec<Pubkey> {
+        pools
+            .iter()
+            .filter_map(|pool| {
+                let state = self.accounts[pool].as_ref()?;
+                self.walks(*pool, state).ok()
+            })
+            .flat_map(|walks| walks.concat())
+            .collect()
+    }
+
+    /// `pool`'s walks over the accounts fetched so far.
+    fn walks(&self, pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
+        arrays::array_walks(pool, state, |key| self.fetched_so_far(key))
+    }
+
+    /// The account at `key`, if it exists and this load fetched it so far.
+    fn fetched_so_far(&self, key: &Pubkey) -> Option<&Account> {
+        self.accounts.get(key).and_then(Option::as_ref)
+    }
+
+    /// Whether `key` was fetched and exists under `owner`.
+    fn exists(&self, key: &Pubkey, owner: Pubkey) -> bool {
+        self.fetched_so_far(key)
+            .is_some_and(|account| account.owner == owner)
     }
 
     fn account(&mut self, key: Pubkey) -> Result<Option<&Account>> {
@@ -225,38 +249,23 @@ impl<'a> AccountLoader<'a> {
                 PoolAccounts::from_archer_state(pool, &state.data, x, base, &books)
             }
             DLMM_PRO => self.load_dlmm_pro(pool, &state, x, base),
-            abi::BYREAL => {
-                self.check_byreal(pool, &state, x, base)?;
-                self.load_with_arrays(pool, &state, x, base)
+            abi::CLMM | abi::PANCAKESWAP | abi::BYREAL => {
+                let clmm = clmm::Pool::decode(pool, &state.data)?;
+                let now = clock_unix_timestamp(&self.get(clock::ID)?)?;
+                clmm.ensure_swappable(state.owner, now)?;
+                if state.owner == abi::BYREAL {
+                    self.check_byreal(pool, &state, x, base)?;
+                }
+                self.load_concentrated_pool(pool, &state, x, base)
             }
-            _ => self.load_with_arrays(pool, &state, x, base),
+            abi::WHIRLPOOL | abi::DLMM => self.load_concentrated_pool(pool, &state, x, base),
+            _ => PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &[], None),
         }
     }
 
-    /// A pool listing the prefetched arrays around its active one, and for
-    /// DLMM its bitmap extension where that exists.
-    fn load_with_arrays(
-        &self,
-        pool: Pubkey,
-        state: &Account,
-        x: MintAccounts,
-        base: MintAccounts,
-    ) -> Result<PoolAccounts> {
-        let (candidates, bitmap) =
-            abi::array_candidates(pool, state.owner, &state.data, ARRAY_RADIUS)?;
-        let exists = |key: &Pubkey| {
-            self.accounts[key]
-                .as_ref()
-                .is_some_and(|a| a.owner == state.owner)
-        };
-        let arrays: Vec<Pubkey> = candidates.into_iter().filter(exists).collect();
-        let bitmap = bitmap.filter(|key| state.owner != abi::DLMM || exists(key));
-        PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &arrays, bitmap)
-    }
-
-    /// A DLMM Pro pool listing the existing prefix of each direction's array
-    /// walk. This client lists no transfer-hook accounts, so a pool whose
-    /// Token-2022 mint names a hook program is rejected.
+    /// A DLMM Pro pool, listed like any concentrated pool. This client lists
+    /// no transfer-hook accounts, so a pool whose Token-2022 mint names a
+    /// hook program is rejected.
     fn load_dlmm_pro(
         &mut self,
         pool: Pubkey,
@@ -274,36 +283,7 @@ impl<'a> AccountLoader<'a> {
                 );
             }
         }
-        let walks = self.dlmm_pro_walks(pool, state)?;
-        self.prefetch(walks.iter().flatten().copied())?;
-        let walks = dlmm_pro::existing_prefix(walks, |array| {
-            self.accounts[array]
-                .as_ref()
-                .is_some_and(|a| a.owner == DLMM_PRO)
-        });
-        let arrays = dlmm_pro::select_arrays(&walks);
-        ensure!(
-            !arrays.is_empty(),
-            "pool {pool} has no array where a swap starts"
-        );
-        let bitmap = dlmm_pro_extension(pool, state);
-        PoolAccounts::from_state(pool, DLMM_PRO, &state.data, x, base, &arrays, bitmap)
-    }
-
-    /// Each direction's array walk over the pool's own bitmap and, for a pool
-    /// flagged as having one, the bitmap extension this load fetched.
-    fn dlmm_pro_walks(&self, pool: Pubkey, state: &Account) -> Result<[Vec<Pubkey>; 2]> {
-        let extension = dlmm_pro_extension(pool, state)
-            .map(|key| self.fetched(&key))
-            .transpose()?
-            .flatten()
-            .map(|account| account.data.as_slice());
-        dlmm_pro::swap_walks(
-            &pool,
-            &state.data,
-            extension,
-            dlmm_pro::ARRAYS_PER_DIRECTION,
-        )
+        self.load_concentrated_pool(pool, state, x, base)
     }
 
     /// The executor rejects a whole transaction whose Byreal pool lists an
@@ -383,39 +363,62 @@ impl<'a> AccountLoader<'a> {
         }
         Ok(&self.archer_books[&market])
     }
+
+    /// A concentrated pool listing its bitmap extension and each direction's
+    /// walk up to its first array that does not exist.
+    fn load_concentrated_pool(
+        &mut self,
+        pool: Pubkey,
+        state: &Account,
+        x: MintAccounts,
+        base: MintAccounts,
+    ) -> Result<PoolAccounts> {
+        let walks = self.walks(pool, state)?;
+        self.prefetch(walks.concat())?;
+        let arrays = arrays::listed_arrays(&walks, |array| self.exists(array, state.owner));
+        ensure!(
+            !arrays.is_empty(),
+            "pool {pool} has no array where a swap starts"
+        );
+        // A CLMM fork lists its extension's address whether or not it exists;
+        // DLMM's is optional on chain and listed only when it exists. A DLMM
+        // Pro pool lists the extension it is flagged as having.
+        let bitmap = match state.owner {
+            DLMM_PRO => dlmm_pro_extension(pool, state),
+            owner => abi::bitmap_extension(pool, owner)
+                .filter(|key| owner != abi::DLMM || self.exists(key, owner)),
+        };
+        PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &arrays, bitmap)
+    }
 }
 
-/// Accounts a pool's builder or its loader checks read besides the pool. A
-/// DLMM bitmap extension is optional on chain and only listed when it exists.
+/// Accounts a pool's builder or its loader checks read besides the pool and
+/// its arrays. A CLMM pool also reads the clock its opening time is checked
+/// against.
 fn pool_reads(pool: Pubkey, state: &Account) -> Result<Vec<Pubkey>> {
-    match state.owner {
-        abi::PUMP => Ok(vec![pump_global_config()]),
-        abi::METEORA => Ok(abi::PoolPair::read(state.owner, &state.data)?
+    Ok(match state.owner {
+        abi::PUMP => vec![pump_global_config()],
+        abi::METEORA => abi::PoolPair::read(state.owner, &state.data)?
             .vaults()
-            .to_vec()),
-        abi::MANIFEST => Ok(abi::manifest_global_mints(&state.data)?
+            .to_vec(),
+        abi::MANIFEST => abi::manifest_global_mints(&state.data)?
             .iter()
             .flat_map(abi::manifest_global)
-            .collect()),
-        ARCHER => Ok(vec![clock::ID, LAST_RESTART_SLOT]),
-        DLMM_PRO => Ok(dlmm_pro_extension(pool, state).into_iter().collect()),
+            .collect(),
+        ARCHER => vec![clock::ID, LAST_RESTART_SLOT],
+        DLMM_PRO => dlmm_pro_extension(pool, state).into_iter().collect(),
+        abi::CLMM | abi::PANCAKESWAP => {
+            vec![abi::clmm_bitmap_extension(&pool, &state.owner), clock::ID]
+        }
         abi::BYREAL => {
-            let (candidates, extension) =
-                abi::array_candidates(pool, abi::BYREAL, &state.data, ARRAY_RADIUS)?;
             let updates = abi::byreal_price_updates(&state.data)?;
-            Ok(candidates
+            [abi::clmm_bitmap_extension(&pool, &abi::BYREAL), clock::ID]
                 .into_iter()
-                .chain(extension)
                 .chain(updates.into_iter().flatten().map(|update| update.account))
-                .collect())
+                .collect()
         }
-        owner => {
-            let (candidates, bitmap) =
-                abi::array_candidates(pool, owner, &state.data, ARRAY_RADIUS)?;
-            let bitmap = bitmap.filter(|_| owner == abi::DLMM);
-            Ok(candidates.into_iter().chain(bitmap).collect())
-        }
-    }
+        owner => abi::bitmap_extension(pool, owner).into_iter().collect(),
+    })
 }
 
 /// The bitmap extension of a DLMM Pro pool flagged as having one.
@@ -427,6 +430,12 @@ fn dlmm_pro_extension(pool: Pubkey, state: &Account) -> Option<Pubkey> {
 fn clock_slot(account: &Account) -> Result<u64> {
     let clock = sysvar_data(account, "Clock", 40)?;
     Ok(u64::from_le_bytes(abi::read(clock, 0)?))
+}
+
+/// The Clock's unix_timestamp, the fifth of its five 8-byte fields.
+fn clock_unix_timestamp(account: &Account) -> Result<i64> {
+    let clock = sysvar_data(account, "Clock", 40)?;
+    Ok(i64::from_le_bytes(abi::read(clock, 32)?))
 }
 
 /// The Archer aggregator skips books updated at or before this slot.

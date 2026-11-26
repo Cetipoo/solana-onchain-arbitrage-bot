@@ -218,10 +218,14 @@ mod tests {
                 "pool does not use arrays"
             );
         }
-        assert!(
-            crate::v10::array_candidates(JITO_POOL, SPL_STAKE_POOL, &state, 1)?
-                .0
-                .is_empty()
+        let account = solana_sdk::account::Account {
+            owner: SPL_STAKE_POOL,
+            data: state.clone(),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::arrays::array_walks(JITO_POOL, &account, |_| None)?,
+            [vec![], vec![]]
         );
 
         // A wallet whose jitoSOL account is the manager fee account.

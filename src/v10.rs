@@ -59,7 +59,7 @@ pub(crate) mod tests;
 
 /// The most tick or bin arrays a concentrated pool's block lists.
 pub const MAX_ARRAYS: usize = 6;
-const WHIRLPOOL_TICK_SPACING_OFFSET: usize = 41;
+pub(crate) const WHIRLPOOL_TICK_SPACING_OFFSET: usize = 41;
 const WHIRLPOOL_FEE_TIER_INDEX_OFFSET: usize = 43;
 const FUTARCHY_DAO_DISCRIMINATOR: [u8; 8] = [163, 9, 47, 31, 52, 85, 197, 49];
 /// A DAMM v2 pool's `collect_fee_mode`, and the mode that compounds its fees
@@ -72,6 +72,34 @@ pub(crate) fn read<const N: usize>(d: &[u8], offset: usize) -> Result<[u8; N]> {
         .ok_or_else(|| anyhow::anyhow!("truncated pool account"))?
         .try_into()
         .map_err(Into::into)
+}
+
+/// The tick array of a CLMM-fork `pool` under `program` whose first tick is
+/// `start_tick`.
+pub fn clmm_tick_array(pool: Pubkey, program: Pubkey, start_tick: i32) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"tick_array", pool.as_ref(), &start_tick.to_be_bytes()],
+        &program,
+    )
+    .0
+}
+
+/// The tick array of Whirlpool `pool` whose first tick is `start_tick`.
+pub fn whirlpool_tick_array(pool: Pubkey, start_tick: i32) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"tick_array",
+            pool.as_ref(),
+            start_tick.to_string().as_bytes(),
+        ],
+        &WHIRLPOOL,
+    )
+    .0
+}
+
+/// The bin array of DLMM `pool` at array `index`.
+pub fn dlmm_bin_array(pool: Pubkey, index: i64) -> Pubkey {
+    Pubkey::find_program_address(&[b"bin_array", pool.as_ref(), &index.to_le_bytes()], &DLMM).0
 }
 
 /// Whether pools of `owner` list neither tick or bin arrays nor a bitmap.
@@ -92,70 +120,14 @@ fn lists_no_arrays(owner: Pubkey) -> bool {
     )
 }
 
-pub fn array_candidates(
-    pool: Pubkey,
-    owner: Pubkey,
-    data: &[u8],
-    radius: u8,
-) -> Result<(Vec<Pubkey>, Option<Pubkey>)> {
-    ensure!(radius <= 2, "array radius must be 0, 1 or 2");
-    let (current, width, seed, bitmap) = match owner {
-        _ if lists_no_arrays(owner) => return Ok((vec![], None)),
-        DLMM_PRO => bail!("DLMM Pro arrays come from dlmm_pro::swap_walks"),
-        CLMM | PANCAKESWAP | BYREAL => {
-            let spacing = u16::from_le_bytes(read(data, 235)?) as i32;
-            ensure!(spacing > 0, "invalid CLMM spacing");
-            (
-                i32::from_le_bytes(read(data, 269)?),
-                spacing * 60,
-                b"tick_array".as_slice(),
-                Some(clmm_bitmap_extension(&pool, &owner)),
-            )
-        }
-        WHIRLPOOL => {
-            let spacing = u16::from_le_bytes(read(data, WHIRLPOOL_TICK_SPACING_OFFSET)?) as i32;
-            ensure!(spacing > 0, "invalid Whirlpool spacing");
-            (
-                i32::from_le_bytes(read(data, 81)?),
-                spacing * 88,
-                b"tick_array".as_slice(),
-                None,
-            )
-        }
-        DLMM => (
-            i32::from_le_bytes(read(data, 76)?),
-            70,
-            b"bin_array".as_slice(),
-            Some(Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &owner).0),
-        ),
-        _ => bail!("unsupported V10 DEX {}", owner),
-    };
-    let center = current.div_euclid(width);
-    let arrays = (-(radius as i32)..=radius as i32)
-        .map(|offset| {
-            let index = center + offset;
-            if owner == DLMM {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), &(index as i64).to_le_bytes()],
-                    &owner,
-                )
-                .0
-            } else if [CLMM, PANCAKESWAP, BYREAL].contains(&owner) {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), &(index * width).to_be_bytes()],
-                    &owner,
-                )
-                .0
-            } else {
-                Pubkey::find_program_address(
-                    &[seed, pool.as_ref(), (index * width).to_string().as_bytes()],
-                    &owner,
-                )
-                .0
-            }
-        })
-        .collect();
-    Ok((arrays, bitmap))
+/// The bitmap extension of a CLMM-fork or DLMM `pool`;
+/// `dlmm_pro::bitmap_extension` derives a DLMM Pro pool's.
+pub fn bitmap_extension(pool: Pubkey, owner: Pubkey) -> Option<Pubkey> {
+    match owner {
+        CLMM | PANCAKESWAP | BYREAL => Some(clmm_bitmap_extension(&pool, &owner)),
+        DLMM => Some(Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &DLMM).0),
+        _ => None,
+    }
 }
 
 /// The tick-array bitmap extension of a CLMM, PancakeSwap or Byreal pool.
@@ -572,7 +544,7 @@ pub enum PoolKeys<'a> {
     },
     DlmmPro {
         bitmap: Option<Pubkey>,
-        /// The arrays both directions walk: `select_arrays` of
+        /// The arrays both directions walk: `arrays::listed_arrays` of
         /// `dlmm_pro::swap_walks`.
         arrays: &'a [Pubkey],
     },

@@ -308,10 +308,15 @@ fn meteora_block_orients_vault_accounts_by_declared_pair() {
         request.settlement
     )
     .is_err());
-    assert!(array_candidates(Pubkey::new_unique(), METEORA, &pool, 2)
-        .unwrap()
-        .0
-        .is_empty());
+    let account = solana_sdk::account::Account {
+        owner: METEORA,
+        data: pool,
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::arrays::array_walks(Pubkey::new_unique(), &account, |_| None).unwrap(),
+        [vec![], vec![]]
+    );
 }
 
 #[test]
@@ -1233,10 +1238,15 @@ fn a_futarchy_dao_lists_its_spot_pool_and_nothing_else() {
         error(&data, mint(Pubkey::new_unique(), TOKEN), usdc),
         "pool does not match the declared mint pair"
     );
-    assert!(array_candidates(dao, FUTARCHY, &data, 1)
-        .unwrap()
-        .0
-        .is_empty());
+    let account = solana_sdk::account::Account {
+        owner: FUTARCHY,
+        data,
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::arrays::array_walks(dao, &account, |_| None).unwrap(),
+        [vec![], vec![]]
+    );
 }
 
 #[test]

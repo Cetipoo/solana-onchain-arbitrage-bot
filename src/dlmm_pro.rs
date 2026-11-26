@@ -59,9 +59,6 @@ const EXTENDED_BITMAP_SIZE: i32 = 7 * BITMAP_SIZE;
 pub const BITMAP_EXTENSION_DISCRIMINATOR: [u8; 8] = [60, 150, 36, 219, 97, 128, 139, 153];
 pub const BITMAP_EXTENSION_LEN: usize = 808;
 
-/// Arrays each swap direction lists at most.
-pub const ARRAYS_PER_DIRECTION: usize = 2;
-
 /// Token-2022 mint layout: the account-type byte after the 165-byte base
 /// account, then type-length-value extensions.
 const MINT_ACCOUNT_TYPE: usize = 165;
@@ -191,31 +188,6 @@ pub fn swap_walks(
     }))
 }
 
-/// Each direction's `walks` up to the first array that does not `exist`,
-/// where its swap stops.
-pub fn existing_prefix(
-    walks: [Vec<Pubkey>; 2],
-    exists: impl Fn(&Pubkey) -> bool,
-) -> [Vec<Pubkey>; 2] {
-    walks.map(|walk| walk.into_iter().take_while(|array| exists(array)).collect())
-}
-
-/// The arrays a pool lists from its `walks`, without repeats. A direction,
-/// like the program's swap, scans the list once and never returns to an
-/// array listed before one it took, so it uses its arrays only in walk
-/// order.
-pub fn select_arrays(walks: &[Vec<Pubkey>; 2]) -> Vec<Pubkey> {
-    let mut arrays = Vec::new();
-    for walk in walks {
-        for array in walk {
-            if !arrays.contains(array) {
-                arrays.push(*array);
-            }
-        }
-    }
-    arrays
-}
-
 fn walk_indexes(data: &[u8], extension: Option<&[u8]>, per_side: usize) -> Result<[Vec<i32>; 2]> {
     let spacing = u16::from_le_bytes(read(data, TICK_SPACING)?);
     let tick = i32::from_le_bytes(read(data, TICK_CURRENT)?);
@@ -288,6 +260,7 @@ impl Bitmap<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arrays::listed_arrays;
 
     fn pool(tick: i32, spacing: u16, arrays: &[i32]) -> Vec<u8> {
         let mut data = vec![0; POOL_LEN];
@@ -343,23 +316,23 @@ mod tests {
     fn one_list_holds_each_direction_in_swap_order_without_repeats() {
         let key = Pubkey::new_unique();
         let data = pool(0, 1, &[-3, -1, 0, 2, 5]);
-        let [down, up] = swap_walks(&key, &data, None, 2).unwrap();
-        assert_eq!(down, [tick_array(&key, 0), tick_array(&key, -1)]);
-        assert_eq!(up, [tick_array(&key, 0), tick_array(&key, 2)]);
-        assert_eq!(
-            select_arrays(&[down.clone(), up.clone()]),
-            [0, -1, 2].map(|index| tick_array(&key, index))
-        );
+        let arrays = |indexes: &[i32]| -> Vec<Pubkey> {
+            indexes
+                .iter()
+                .map(|&index| tick_array(&key, index))
+                .collect()
+        };
+        let walks = swap_walks(&key, &data, None, 2).unwrap();
+        assert_eq!(walks, [arrays(&[0, -1]), arrays(&[0, 2])]);
+        assert_eq!(listed_arrays(&walks, |_| true), arrays(&[0, -1, 2]));
         // A missing array ends its direction's walk, even when a later one
         // exists.
-        let missing = tick_array(&key, -1);
-        assert_eq!(
-            existing_prefix([down, up], |array| *array != missing),
-            [
-                vec![tick_array(&key, 0)],
-                vec![tick_array(&key, 0), tick_array(&key, 2)]
-            ]
-        );
+        let listed_without = |index| {
+            let missing = tick_array(&key, index);
+            listed_arrays(&walks, |array| *array != missing)
+        };
+        assert_eq!(listed_without(-1), arrays(&[0, 2]));
+        assert_eq!(listed_without(0), arrays(&[]));
     }
 
     fn walk_error(key: &Pubkey, data: &[u8], extension: Option<&[u8]>) -> String {
