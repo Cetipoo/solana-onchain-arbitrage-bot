@@ -12,6 +12,13 @@ pub const MAX_POOL_ACCOUNTS: usize = 24;
 /// the wallet's volume accumulator, the fee config and a buyback recipient's
 /// quote account. Longer Pump blocks carry the legacy v1 layout.
 pub const PUMP_V2_POOL_ACCOUNTS: usize = 10;
+/// A Manifest pool block without global accounts: program, quote mint,
+/// market and its two vaults. Each listed global adds itself and its vault.
+pub const MANIFEST_POOL_ACCOUNTS: usize = 5;
+/// An Archer pool block before its maker books: program, base mint, market
+/// and its two vaults.
+pub const ARCHER_POOL_ACCOUNTS: usize = 5;
+pub const ARCHER_MAX_BOOKS: usize = MAX_POOL_ACCOUNTS - ARCHER_POOL_ACCOUNTS;
 pub const MAX_PAYLOAD_LEN: usize = PREFIX_LEN + 1 + MAX_GROUPS * 2 + MAX_POOLS * 2;
 pub const MAX_ADDITIONAL_FEE_BP: u16 = 8_500;
 
