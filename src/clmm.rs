@@ -189,28 +189,32 @@ pub(crate) struct Extension {
 }
 
 impl Extension {
-    /// The extension in `account`, if it is `pool`'s under `program`.
-    pub(crate) fn decode(pool: Pubkey, program: Pubkey, account: &Account) -> Option<Self> {
+    /// The extension in `account`, or `None` where the account holds no
+    /// data. Fails where the data is not `pool`'s extension under `program`.
+    pub(crate) fn decode(pool: Pubkey, program: Pubkey, account: &Account) -> Result<Option<Self>> {
         let data = &account.data;
-        if account.owner != program
-            || data.len() < EXTENSION_LEN
-            || data[..8] != EXTENSION_DISCRIMINATOR
-            || data[8..40] != pool.to_bytes()
-        {
-            return None;
+        if data.is_empty() {
+            return Ok(None);
         }
+        ensure!(
+            account.owner == program
+                && data.len() >= EXTENSION_LEN
+                && data[..8] == EXTENSION_DISCRIMINATOR
+                && data[8..40] == pool.to_bytes(),
+            "invalid CLMM bitmap extension for {pool}"
+        );
         // Each 512-bit bitmap is 8 words, the positive ones first.
-        let bitmaps = |first: usize| {
+        let bitmaps = |first: usize| -> Result<_> {
             let mut bitmaps = [[0; 8]; EXTENSION_BITMAPS];
             for (index, bitmap) in bitmaps.iter_mut().enumerate() {
-                *bitmap = words(data, 40 + 64 * (first + index)).ok()?;
+                *bitmap = words(data, 40 + 64 * (first + index))?;
             }
-            Some(bitmaps)
+            Ok(bitmaps)
         };
-        Some(Self {
+        Ok(Some(Self {
             positive: bitmaps(0)?,
             negative: bitmaps(EXTENSION_BITMAPS)?,
-        })
+        }))
     }
 
     /// The bitmap marking the array at `index`, an index outside the pool's

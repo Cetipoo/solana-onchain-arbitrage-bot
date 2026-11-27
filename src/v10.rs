@@ -102,32 +102,12 @@ pub fn dlmm_bin_array(pool: Pubkey, index: i64) -> Pubkey {
     Pubkey::find_program_address(&[b"bin_array", pool.as_ref(), &index.to_le_bytes()], &DLMM).0
 }
 
-/// Whether pools of `owner` list neither tick or bin arrays nor a bitmap.
-fn lists_no_arrays(owner: Pubkey) -> bool {
+/// Whether pools of `owner` list tick or bin arrays.
+fn uses_arrays(owner: Pubkey) -> bool {
     matches!(
         owner,
-        RAYDIUM
-            | CPMM
-            | DAMMV2
-            | PUMP
-            | METEORA
-            | MANIFEST
-            | FUTARCHY
-            | HYLO_EXCHANGE
-            | HYLO_STABILITY
-            | SPL_STAKE_POOL
-            | ARCHER
+        CLMM | PANCAKESWAP | BYREAL | WHIRLPOOL | DLMM | DLMM_PRO
     )
-}
-
-/// The bitmap extension of a CLMM-fork or DLMM `pool`;
-/// `dlmm_pro::bitmap_extension` derives a DLMM Pro pool's.
-pub fn bitmap_extension(pool: Pubkey, owner: Pubkey) -> Option<Pubkey> {
-    match owner {
-        CLMM | PANCAKESWAP | BYREAL => Some(clmm_bitmap_extension(&pool, &owner)),
-        DLMM => Some(Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &DLMM).0),
-        _ => None,
-    }
 }
 
 /// The tick-array bitmap extension of a CLMM, PancakeSwap or Byreal pool.
@@ -137,6 +117,11 @@ pub fn clmm_bitmap_extension(pool: &Pubkey, program: &Pubkey) -> Pubkey {
         program,
     )
     .0
+}
+
+/// The bin-array bitmap extension of a DLMM pool.
+pub fn dlmm_bitmap_extension(pool: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &DLMM).0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -977,7 +962,7 @@ impl PoolAccounts {
             owner != ARCHER,
             "Archer requires from_archer_state with its maker books"
         );
-        if lists_no_arrays(owner) {
+        if !uses_arrays(owner) {
             ensure!(
                 arrays.is_empty() && bitmap.is_none(),
                 "pool does not use arrays"
@@ -1039,9 +1024,7 @@ impl PoolAccounts {
             DLMM_PRO => {
                 dlmm_pro::check_tradable(&pool, data)?;
                 ensure!(
-                    bitmap
-                        == dlmm_pro::requires_bitmap_extension(data)
-                            .then(|| dlmm_pro::bitmap_extension(&pool)),
+                    bitmap == dlmm_pro::flagged_bitmap_extension(&pool, data),
                     "DLMM Pro bitmap extension does not match its pool flag"
                 );
                 PoolKeys::DlmmPro { bitmap, arrays }
@@ -1131,7 +1114,7 @@ impl PoolAccounts {
             PoolKeys::Raydium => {
                 ensure!(
                     !uses_token_2022(x, base),
-                    "V10 Raydium requires legacy token mints and no arrays"
+                    "V10 Raydium requires legacy token mints"
                 );
                 accounts.extend([
                     AccountMeta::new_readonly(
@@ -1181,52 +1164,9 @@ impl PoolAccounts {
                     !arrays.is_empty() && arrays.len() <= MAX_ARRAYS,
                     "V10 requires 1..={MAX_ARRAYS} arrays per concentrated pool"
                 );
-                let (middle, pyth) = match keys {
-                    PoolKeys::Clmm {
-                        program,
-                        config,
-                        observation,
-                        bitmap,
-                        pyth,
-                        ..
-                    } => {
-                        ensure!(
-                            [CLMM, PANCAKESWAP, BYREAL].contains(&program),
-                            "unsupported CLMM program"
-                        );
-                        ensure!(
-                            pyth.is_none() || program == BYREAL,
-                            "only Byreal pools take Pyth price updates"
-                        );
-                        let middle = vec![
-                            AccountMeta::new_readonly(config, false),
-                            AccountMeta::new(observation, false),
-                            AccountMeta::new(bitmap, false),
-                            AccountMeta::new(x_vault, false),
-                            AccountMeta::new(base_vault, false),
-                        ];
-                        (middle, pyth)
-                    }
-                    PoolKeys::Whirlpool { .. } => {
-                        let oracle =
-                            Pubkey::find_program_address(&[b"oracle", pool.as_ref()], &WHIRLPOOL).0;
-                        let middle = vec![
-                            AccountMeta::new(oracle, false),
-                            AccountMeta::new(x_vault, false),
-                            AccountMeta::new(base_vault, false),
-                        ];
-                        (middle, None)
-                    }
-                    PoolKeys::Dlmm { oracle, bitmap, .. } => {
-                        let mut middle = vec![
-                            AccountMeta::new(x_vault, false),
-                            AccountMeta::new(base_vault, false),
-                            AccountMeta::new(oracle, false),
-                        ];
-                        middle.extend(bitmap.map(|bitmap| AccountMeta::new(bitmap, false)));
-                        (middle, None)
-                    }
-                    _ => unreachable!(),
+                let pyth = match keys {
+                    PoolKeys::Clmm { pyth, .. } => pyth,
+                    _ => None,
                 };
                 if owner == DLMM {
                     accounts.push(AccountMeta::new_readonly(
@@ -1238,7 +1178,49 @@ impl PoolAccounts {
                     accounts.push(AccountMeta::new_readonly(MEMO, false));
                 }
                 accounts.push(AccountMeta::new(pool, false));
-                accounts.extend(middle);
+                match keys {
+                    PoolKeys::Clmm {
+                        program,
+                        config,
+                        observation,
+                        bitmap,
+                        ..
+                    } => {
+                        ensure!(
+                            [CLMM, PANCAKESWAP, BYREAL].contains(&program),
+                            "unsupported CLMM program"
+                        );
+                        ensure!(
+                            pyth.is_none() || program == BYREAL,
+                            "only Byreal pools take Pyth price updates"
+                        );
+                        accounts.extend([
+                            AccountMeta::new_readonly(config, false),
+                            AccountMeta::new(observation, false),
+                            AccountMeta::new(bitmap, false),
+                            AccountMeta::new(x_vault, false),
+                            AccountMeta::new(base_vault, false),
+                        ]);
+                    }
+                    PoolKeys::Whirlpool { .. } => {
+                        let oracle =
+                            Pubkey::find_program_address(&[b"oracle", pool.as_ref()], &WHIRLPOOL).0;
+                        accounts.extend([
+                            AccountMeta::new(oracle, false),
+                            AccountMeta::new(x_vault, false),
+                            AccountMeta::new(base_vault, false),
+                        ]);
+                    }
+                    PoolKeys::Dlmm { oracle, bitmap, .. } => {
+                        accounts.extend([
+                            AccountMeta::new(x_vault, false),
+                            AccountMeta::new(base_vault, false),
+                            AccountMeta::new(oracle, false),
+                        ]);
+                        accounts.extend(bitmap.map(|bitmap| AccountMeta::new(bitmap, false)));
+                    }
+                    _ => unreachable!(),
+                }
                 accounts.extend(arrays.iter().map(|&a| AccountMeta::new(a, false)));
                 if let Some(updates) = pyth {
                     // swap_v3_dyn requires the Token-2022 program even for

@@ -72,8 +72,7 @@ impl<'a> AccountLoader<'a> {
     }
 
     /// The arrays the fetched `pools`' walks reach with the bitmap extensions
-    /// fetched so far. A CLMM walk before its extension is fetched is a
-    /// prefix of the walk the extension steers.
+    /// fetched so far.
     fn walked_arrays(&self, pools: &[Pubkey]) -> Vec<Pubkey> {
         pools
             .iter()
@@ -380,13 +379,16 @@ impl<'a> AccountLoader<'a> {
             !arrays.is_empty(),
             "pool {pool} has no array where a swap starts"
         );
-        // A CLMM fork lists its extension's address whether or not it exists;
-        // DLMM's is optional on chain and listed only when it exists. A DLMM
-        // Pro pool lists the extension it is flagged as having.
         let bitmap = match state.owner {
-            DLMM_PRO => dlmm_pro_extension(pool, state),
-            owner => abi::bitmap_extension(pool, owner)
-                .filter(|key| owner != abi::DLMM || self.exists(key, owner)),
+            abi::CLMM | abi::PANCAKESWAP | abi::BYREAL => {
+                Some(abi::clmm_bitmap_extension(&pool, &state.owner))
+            }
+            // Optional on chain: listed only where it exists.
+            abi::DLMM => {
+                Some(abi::dlmm_bitmap_extension(&pool)).filter(|key| self.exists(key, abi::DLMM))
+            }
+            DLMM_PRO => dlmm_pro::flagged_bitmap_extension(&pool, &state.data),
+            _ => None,
         };
         PoolAccounts::from_state(pool, state.owner, &state.data, x, base, &arrays, bitmap)
     }
@@ -406,7 +408,9 @@ fn pool_reads(pool: Pubkey, state: &Account) -> Result<Vec<Pubkey>> {
             .flat_map(abi::manifest_global)
             .collect(),
         ARCHER => vec![clock::ID, LAST_RESTART_SLOT],
-        DLMM_PRO => dlmm_pro_extension(pool, state).into_iter().collect(),
+        DLMM_PRO => dlmm_pro::flagged_bitmap_extension(&pool, &state.data)
+            .into_iter()
+            .collect(),
         abi::CLMM | abi::PANCAKESWAP => {
             vec![abi::clmm_bitmap_extension(&pool, &state.owner), clock::ID]
         }
@@ -417,13 +421,9 @@ fn pool_reads(pool: Pubkey, state: &Account) -> Result<Vec<Pubkey>> {
                 .chain(updates.into_iter().flatten().map(|update| update.account))
                 .collect()
         }
-        owner => abi::bitmap_extension(pool, owner).into_iter().collect(),
+        abi::DLMM => vec![abi::dlmm_bitmap_extension(&pool)],
+        _ => vec![],
     })
-}
-
-/// The bitmap extension of a DLMM Pro pool flagged as having one.
-fn dlmm_pro_extension(pool: Pubkey, state: &Account) -> Option<Pubkey> {
-    dlmm_pro::requires_bitmap_extension(&state.data).then(|| dlmm_pro::bitmap_extension(&pool))
 }
 
 /// The Clock's slot, the first of its five 8-byte fields.
