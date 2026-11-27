@@ -432,6 +432,18 @@ impl PoolPair {
         Self::layout(program, data)
     }
 
+    /// The pair an account of `program` holding `data` pools between `a` and
+    /// `b`, either way round. A Hylo account that pools several conversions
+    /// is read as the one trading them.
+    pub(crate) fn read_trading(program: Pubkey, data: &[u8], [a, b]: [Pubkey; 2]) -> Result<Self> {
+        if is_hylo(&program) {
+            return Ok(HyloPool::read(&program, data, [a, b])?.pair());
+        }
+        let pair = Self::read(program, data)?;
+        pair.vaults_for(a, b)?;
+        Ok(pair)
+    }
+
     fn layout(program: Pubkey, data: &[u8]) -> Result<Self> {
         let (m0, m1, v0, v1) = match program {
             RAYDIUM => (400, 432, 336, 368),

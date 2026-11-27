@@ -453,7 +453,7 @@ fn records(data: &[u8], discriminator: [u8; 8], recorded: &[(usize, &Pubkey)]) -
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::v10::{MintAccounts, PoolAccounts, TOKEN, TOKEN_2022};
 
@@ -475,18 +475,25 @@ mod tests {
         account(POOL_CONFIG_DISCRIMINATOR, &[])
     }
 
-    fn hylo() -> Vec<u8> {
+    pub(crate) const HYLO_ACCOUNT: Pubkey = HYLO;
+    pub(crate) const JITOSOL_HEADER: Pubkey = JITOSOL.state;
+    pub(crate) const JITOSOL_MINT: Pubkey = JITOSOL.mint;
+    pub(crate) const CBBTC_PAIR: Pubkey = CBBTC.state;
+    pub(crate) const CBBTC_MINT: Pubkey = CBBTC.mint;
+    pub(crate) const CBBTC_LEVER: Pubkey = CBBTC.lever;
+
+    pub(crate) fn hylo() -> Vec<u8> {
         account(HYLO_DISCRIMINATOR, &[(136, XSOL)])
     }
 
-    fn jitosol_header() -> Vec<u8> {
+    pub(crate) fn jitosol_header() -> Vec<u8> {
         account(
             LST_HEADER_DISCRIMINATOR,
             &[(8, JITOSOL.mint), (40, JITOSOL.vault)],
         )
     }
 
-    fn cbbtc_pair() -> Vec<u8> {
+    pub(crate) fn cbbtc_pair() -> Vec<u8> {
         account(
             EXO_PAIR_DISCRIMINATOR,
             &[(8, CBBTC.mint), (44, CBBTC.oracle)],

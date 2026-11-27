@@ -70,7 +70,17 @@ Use the **full featured production bot** instead:
 - Manifest, including global orders
 - Futarchy spot pools
 - Archer (the bot lists up to 19 of the maker books each market's aggregator admits: the most recently updated, in address order)
-- Hylo: the exchange's hyUSD/USDC pair (`CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS`), its xSOL/hyUSD conversion (`9cd2sAfbBvKs4SX9YKo4dcjwP3TgTVQ8dT5koshGcDND`) and the Stability Pool's sHYUSD/hyUSD (`2jk7miWrsTbt5hUSaCXPkEQPvuUMgbFLpgMzMQw3Z6ar`)
+- Hylo: every conversion the program trades, each configured by the account that pools it:
+  - hyUSD/USDC: `CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS`
+  - sHYUSD/hyUSD (Stability Pool): `2jk7miWrsTbt5hUSaCXPkEQPvuUMgbFLpgMzMQw3Z6ar`
+  - xSOL/hyUSD: `9cd2sAfbBvKs4SX9YKo4dcjwP3TgTVQ8dT5koshGcDND`
+  - hyUSD/jitoSOL and xSOL/jitoSOL: `8Ri52tZXZehgAHKbx1MQiXhWXXkVsvAL9op6C5HytDKF`
+  - hyUSD/hyloSOL and xSOL/hyloSOL: `GMC2Q4ukPjiMjnhmxpZHDThQ4znC8oBAdveL62Tcu9rK`
+  - hyUSD/cbBTC, its levercoin against cbBTC and against hyUSD: `8mgw2TsNxTMndWPyswLELw3V2tPrPvtqS7Ex9RyiGhML`
+  - hyUSD/HYPE, xHYPE/HYPE and xHYPE/hyUSD: `42GzNWvZ1H1hwXaBZ8mbeVZaSEgh6zMm8BABdS3v1BEB`
+  - hyUSD/ZEC, its levercoin against ZEC and against hyUSD: `Atssq1iqXhUrPX1qV9e2UyQCWdeAd6DXQrccK9eu3Bc`
+
+  An account that holds several conversions can only be a triangle's `intermediate`. The triangle's target and stock choose the conversion.
 - SPL Stake Pool SOL deposits and withdrawals, for pools whose mint is a legacy SPL token
 
 ---
@@ -126,9 +136,9 @@ Each `[[transactions]]` entry is one V10 instruction. It settles in SOL or USDC,
 
 - **Direct group** (`pools`): two or more pools trading one token against SOL or USDC, at least one quoted in the settlement mint.
 - **Triangle group**:
-  - `intermediate`: trades the token against a second token, the stock.
-  - `bridges`: trade the stock against SOL or USDC. Every triangle in a transaction uses the same quote mint.
   - `direct`: trade the token against the settlement mint.
+  - `bridges`: trade a second token, the stock, against SOL or USDC. All bridges of a triangle trade the same stock, and every triangle in a transaction uses the same quote mint.
+  - `intermediate`: trades the token against the stock.
 
 A transaction may hold at most 16 pools, including the conversion, and must fit a v1 transaction (64 accounts, 4096 bytes); the bot reports an oversized transaction instead of sending it. Pool state is reloaded every 5 seconds. A pool that cannot be traded at that moment, such as a full Manifest market, is left out until the next reload.
 

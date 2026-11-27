@@ -120,31 +120,47 @@ fn mints(loader: &mut AccountLoader, pool: Pubkey) -> Result<[Pubkey; 2]> {
         .mints)
 }
 
-/// The mint `pool` trades `mint` against.
-fn counterpart(loader: &mut AccountLoader, pool: Pubkey, mint: Pubkey) -> Result<Pubkey> {
+/// A pool's token and the SOL or USDC it trades the token against.
+fn quoted(loader: &mut AccountLoader, pool: Pubkey) -> Result<(Pubkey, Pubkey)> {
     match mints(loader, pool)? {
-        [a, b] if a == mint => Ok(b),
-        [a, b] if b == mint => Ok(a),
-        _ => bail!("pool {pool} does not trade {mint}"),
+        [a, b] if is_quote(&a) && is_quote(&b) => {
+            bail!("pool {pool} trades SOL against USDC, which is the conversion")
+        }
+        [a, b] if is_quote(&b) => Ok((a, b)),
+        [a, b] if is_quote(&a) => Ok((b, a)),
+        _ => bail!("pool {pool} does not trade against SOL or USDC"),
     }
 }
 
-/// The one mint every pool trades `mint` against.
-fn common_counterpart(
-    loader: &mut AccountLoader,
-    pools: &[Pubkey],
-    mint: Pubkey,
-) -> Result<Pubkey> {
-    let mut common = None;
+/// The token every pool trades, and the SOL or USDC each pool trades it
+/// against, in pool order.
+fn common_token(loader: &mut AccountLoader, pools: &[Pubkey]) -> Result<(Pubkey, Vec<Pubkey>)> {
+    let mut token = None;
+    let mut quotes = Vec::with_capacity(pools.len());
     for &pool in pools {
-        let other = counterpart(loader, pool, mint)?;
-        let expected = *common.get_or_insert(other);
+        let (pool_token, quote) = quoted(loader, pool)?;
+        let expected = *token.get_or_insert(pool_token);
         ensure!(
-            expected == other,
-            "pool {pool} trades {mint} against {other}, not {expected}"
+            expected == pool_token,
+            "pool {pool} trades {pool_token}, not {expected}"
         );
+        quotes.push(quote);
     }
-    common.context("no pools")
+    Ok((token.context("no pools")?, quotes))
+}
+
+/// Refuses the first pool that trades `token` against a mint other than
+/// `quote`.
+fn ensure_quoted_in(
+    pools: &[Pubkey],
+    quotes: &[Pubkey],
+    token: Pubkey,
+    quote: Pubkey,
+) -> Result<()> {
+    match pools.iter().zip(quotes).find(|&(_, &other)| other != quote) {
+        Some((pool, other)) => bail!("pool {pool} trades {token} against {other}, not {quote}"),
+        None => Ok(()),
+    }
 }
 
 impl Route {
@@ -267,30 +283,13 @@ impl Direct {
         loader: &mut AccountLoader,
     ) -> Result<Self> {
         ensure!(config.pools.len() >= 2, "a direct group needs two pools");
-        let mut target = None;
-        let mut settled = false;
-        for &pool in &config.pools {
-            let (pool_target, quote) = match mints(loader, pool)? {
-                [a, b] if is_quote(&a) && is_quote(&b) => {
-                    bail!("pool {pool} trades SOL against USDC, which is the conversion")
-                }
-                [a, b] if is_quote(&b) => (a, b),
-                [a, b] if is_quote(&a) => (b, a),
-                _ => bail!("pool {pool} does not trade against SOL or USDC"),
-            };
-            let expected = *target.get_or_insert(pool_target);
-            ensure!(
-                expected == pool_target,
-                "pool {pool} trades {pool_target}, not the group's target {expected}"
-            );
-            settled |= quote == settlement;
-        }
+        let (target, quotes) = common_token(loader, &config.pools)?;
         ensure!(
-            settled,
+            quotes.contains(&settlement),
             "a direct group needs a pool quoted in {settlement}"
         );
         Ok(Self {
-            target: target.context("no pools")?,
+            target,
             pools: config.pools.clone(),
         })
     }
@@ -324,6 +323,8 @@ impl Group for Direct {
 }
 
 impl Triangle {
+    /// The bridges name the stock, since a Hylo intermediate can pool
+    /// several conversions of its target.
     fn resolve(
         config: &TriangleConfig,
         settlement: Pubkey,
@@ -331,17 +332,19 @@ impl Triangle {
     ) -> Result<Self> {
         ensure!(!config.direct.is_empty(), "a triangle needs a direct pool");
         ensure!(!config.bridges.is_empty(), "a triangle needs a bridge pool");
-        let target = common_counterpart(loader, &config.direct, settlement)?;
-        let stock = counterpart(loader, config.intermediate, target)?;
-        ensure!(
-            !is_quote(&target) && !is_quote(&stock),
-            "a triangle's target and stock cannot be SOL or USDC"
-        );
-        let quote = common_counterpart(loader, &config.bridges, stock)?;
-        ensure!(
-            is_quote(&quote),
-            "bridges must trade {stock} against SOL or USDC"
-        );
+        let (target, direct_quotes) =
+            common_token(loader, &config.direct).context("direct pools")?;
+        ensure_quoted_in(&config.direct, &direct_quotes, target, settlement)
+            .context("direct pools")?;
+        let (stock, bridge_quotes) = common_token(loader, &config.bridges).context("bridges")?;
+        let quote = bridge_quotes[0];
+        ensure_quoted_in(&config.bridges, &bridge_quotes, stock, quote).context("bridges")?;
+        let intermediate = loader.get(config.intermediate)?;
+        abi::PoolPair::read_trading(intermediate.owner, &intermediate.data, [target, stock])
+            .with_context(|| {
+                let pool = config.intermediate;
+                format!("intermediate {pool} trading {target} against {stock}")
+            })?;
         Ok(Self {
             target,
             stock,
@@ -577,8 +580,326 @@ fn platform_collector(settlement: Pubkey) -> Pubkey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hylo::{tests as hylo_state, HYLO_EXCHANGE, HYUSD, XSOL};
     use crate::v10::PoolKeys;
     use executor_v10_abi::cost::{ARCHER_BOOK_CU, ARCHER_BOOK_PARSE_CU};
+    use executor_v10_abi::Venue;
+    use solana_client::rpc_client::RpcClient;
+    use solana_sdk::account::Account;
+
+    fn cpmm_pool(pair: [Pubkey; 2]) -> Account {
+        Account {
+            owner: abi::CPMM,
+            data: crate::v10::tests::cpmm_state(pair),
+            ..Account::default()
+        }
+    }
+
+    /// The triangle over `intermediate` whose direct pools and bridges are
+    /// CPMM pools trading the paired mints, resolved for `settlement`, with
+    /// `accounts` holding every other account it reads.
+    fn resolve_triangle<'a>(
+        rpc: &'a RpcClient,
+        accounts: &[(Pubkey, Account)],
+        intermediate: Pubkey,
+        settlement: Pubkey,
+        direct: &[(Pubkey, [Pubkey; 2])],
+        bridges: &[(Pubkey, [Pubkey; 2])],
+    ) -> Result<(Triangle, AccountLoader<'a>), String> {
+        let pools = direct
+            .iter()
+            .chain(bridges)
+            .map(|&(key, pair)| (key, cpmm_pool(pair)));
+        let accounts: Vec<_> = accounts
+            .iter()
+            .cloned()
+            .chain(pools)
+            .map(|(key, account)| (key, Some(account)))
+            .collect();
+        let keys = |pools: &[(Pubkey, [Pubkey; 2])]| pools.iter().map(|&(key, _)| key).collect();
+        let config = TriangleConfig {
+            intermediate,
+            bridges: keys(bridges),
+            direct: keys(direct),
+        };
+        let mut loader = AccountLoader::with_accounts(rpc, &accounts);
+        let resolved = Triangle::resolve(&config, settlement, &mut loader);
+        resolved
+            .map(|triangle| (triangle, loader))
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    /// A resolved triangle's target, stock and quote.
+    fn traded((triangle, _): (Triangle, AccountLoader<'_>)) -> (Pubkey, Pubkey, Pubkey) {
+        (triangle.target, triangle.stock, triangle.quote)
+    }
+
+    /// Each conversion a Hylo intermediate pools is the one between the
+    /// target the direct pool trades and the stock the bridge trades, and it
+    /// loads as that conversion's venue. A pair the intermediate does not
+    /// pool is refused at startup.
+    #[test]
+    fn a_triangle_trades_the_conversion_of_its_intermediate_its_pools_name() {
+        let (jitosol, cbbtc, lever) = (
+            hylo_state::JITOSOL_MINT,
+            hylo_state::CBBTC_MINT,
+            hylo_state::CBBTC_LEVER,
+        );
+        let (header, cbbtc_pair, hylo) = (
+            hylo_state::JITOSOL_HEADER,
+            hylo_state::CBBTC_PAIR,
+            hylo_state::HYLO_ACCOUNT,
+        );
+        let [jup, usdt, jup_usdt, direct, bridge] = [(); 5].map(|_| Pubkey::new_unique());
+        let (sol, usdc) = (abi::SOL, abi::USDC);
+        let hylo_account = |data| Account {
+            owner: HYLO_EXCHANGE,
+            data,
+            ..Account::default()
+        };
+        let token_mint = |mint| {
+            let account = Account {
+                owner: abi::TOKEN,
+                ..Account::default()
+            };
+            (mint, account)
+        };
+        let accounts: Vec<_> = [
+            (header, hylo_account(hylo_state::jitosol_header())),
+            (cbbtc_pair, hylo_account(hylo_state::cbbtc_pair())),
+            (hylo, hylo_account(hylo_state::hylo())),
+            (jup_usdt, cpmm_pool([jup, usdt])),
+        ]
+        .into_iter()
+        .chain([jitosol, cbbtc, lever, XSOL, HYUSD, jup, usdt, sol, usdc].map(token_mint))
+        .collect();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let resolve = |intermediate, settlement, direct_pair, bridge_pair| {
+            let direct = [(direct, direct_pair)];
+            let bridges = [(bridge, bridge_pair)];
+            resolve_triangle(&rpc, &accounts, intermediate, settlement, &direct, &bridges)
+        };
+        // (intermediate, settlement, target, stock, quote, venue): the direct
+        // pool trades the target against the settlement mint, the bridge the
+        // stock against the quote, and the intermediate loads as the venue.
+        // Every conversion with either mint as the target, then a
+        // single-conversion account and another DEX's pool.
+        let pooled = [
+            (header, sol, jitosol, XSOL, sol, Venue::HyloLstLever),
+            (header, sol, XSOL, jitosol, sol, Venue::HyloLstLever),
+            (header, sol, jitosol, HYUSD, usdc, Venue::HyloLst),
+            (header, usdc, HYUSD, jitosol, sol, Venue::HyloLst),
+            (cbbtc_pair, usdc, cbbtc, HYUSD, usdc, Venue::HyloExo),
+            (cbbtc_pair, usdc, HYUSD, cbbtc, usdc, Venue::HyloExo),
+            (cbbtc_pair, usdc, cbbtc, lever, sol, Venue::HyloExoLever),
+            (cbbtc_pair, sol, lever, cbbtc, usdc, Venue::HyloExoLever),
+            (cbbtc_pair, sol, lever, HYUSD, usdc, Venue::HyloExoConvert),
+            (cbbtc_pair, usdc, HYUSD, lever, sol, Venue::HyloExoConvert),
+            (hylo, sol, XSOL, HYUSD, usdc, Venue::HyloLstConvert),
+            (hylo, usdc, HYUSD, XSOL, sol, Venue::HyloLstConvert),
+            (jup_usdt, sol, jup, usdt, sol, Venue::RaydiumCpmm),
+        ];
+        // Mints whose conversion is another account's, or no account's.
+        let unpooled = [
+            (header, sol, jitosol, cbbtc, sol),
+            (header, usdc, HYUSD, XSOL, sol),
+            (cbbtc_pair, sol, lever, jitosol, sol),
+            (hylo, sol, XSOL, jitosol, sol),
+        ];
+        let (mut resolved, mut refused) = (0, 0);
+        for flipped in [false, true] {
+            let pair = |a, b| if flipped { [b, a] } else { [a, b] };
+            for (intermediate, settlement, target, stock, quote, venue) in pooled {
+                let case = format!("{intermediate}: {target} against {stock}");
+                let (direct_pair, bridge_pair) = (pair(target, settlement), pair(stock, quote));
+                let (triangle, mut loader) =
+                    resolve(intermediate, settlement, direct_pair, bridge_pair)
+                        .unwrap_or_else(|e| panic!("{case}: {e}"));
+                assert_eq!(
+                    (triangle.target, triangle.stock, triangle.quote),
+                    (target, stock, quote),
+                    "{case}"
+                );
+                let wallet = Pubkey::new_unique();
+                let settlement = loader.mint(wallet, settlement).unwrap();
+                let loaded = triangle
+                    .load(&mut loader, settlement, wallet)
+                    .unwrap_or_else(|e| panic!("{case}: {e:#}"));
+                let pool = &loaded.intermediate;
+                assert_eq!(
+                    (pool.venue(), pool.x_mint(), pool.base_mint()),
+                    (venue, target, stock),
+                    "{case}"
+                );
+                resolved += 1;
+            }
+            for (intermediate, settlement, target, stock, quote) in unpooled {
+                let (direct_pair, bridge_pair) = (pair(target, settlement), pair(stock, quote));
+                assert_eq!(
+                    resolve(intermediate, settlement, direct_pair, bridge_pair).map(traded),
+                    Err(format!(
+                        "intermediate {intermediate} trading {target} against {stock}: \
+                         not the pool of a Hylo conversion the executor trades between these mints"
+                    ))
+                );
+                refused += 1;
+            }
+        }
+        assert_eq!((resolved, refused), (26, 8));
+    }
+
+    /// A triangle's direct pools trade one target against the settlement
+    /// mint, its bridges one stock against one of SOL and USDC, and its
+    /// intermediate the target against that stock. Neither the direct pools
+    /// nor the bridges can be the SOL/USDC conversion.
+    #[test]
+    fn a_triangle_refuses_pools_that_disagree_on_their_token_or_quote() {
+        let [jup, usdt, ray, jup_usdt, direct, second_direct, bridge, second_bridge] =
+            [(); 8].map(|_| Pubkey::new_unique());
+        let (sol, usdc) = (abi::SOL, abi::USDC);
+        let accounts = [(jup_usdt, cpmm_pool([jup, usdt]))];
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let pools = |keys: [Pubkey; 2], pairs: &[[Pubkey; 2]]| -> Vec<(Pubkey, [Pubkey; 2])> {
+            keys[..pairs.len()]
+                .iter()
+                .copied()
+                .zip(pairs.iter().copied())
+                .collect()
+        };
+        let resolve = |direct_pairs: &[[Pubkey; 2]], bridge_pairs: &[[Pubkey; 2]]| {
+            let direct_pools = pools([direct, second_direct], direct_pairs);
+            let bridge_pools = pools([bridge, second_bridge], bridge_pairs);
+            resolve_triangle(&rpc, &accounts, jup_usdt, sol, &direct_pools, &bridge_pools)
+                .map(traded)
+        };
+        assert_eq!(
+            resolve(&[[jup, sol], [sol, jup]], &[[usdt, sol], [sol, usdt]]),
+            Ok((jup, usdt, sol))
+        );
+        let refusals = [
+            (
+                vec![],
+                vec![[usdt, sol]],
+                "a triangle needs a direct pool".to_string(),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![],
+                "a triangle needs a bridge pool".to_string(),
+            ),
+            (
+                vec![[jup, sol], [ray, sol]],
+                vec![[usdt, sol]],
+                format!("direct pools: pool {second_direct} trades {ray}, not {jup}"),
+            ),
+            (
+                vec![[jup, ray]],
+                vec![[usdt, sol]],
+                format!("direct pools: pool {direct} does not trade against SOL or USDC"),
+            ),
+            (
+                vec![[usdc, sol]],
+                vec![[usdt, sol]],
+                format!(
+                    "direct pools: pool {direct} trades SOL against USDC, which is the conversion"
+                ),
+            ),
+            (
+                vec![[jup, usdc]],
+                vec![[usdt, sol]],
+                format!("direct pools: pool {direct} trades {jup} against {usdc}, not {sol}"),
+            ),
+            (
+                vec![[jup, usdc], [jup, sol]],
+                vec![[usdt, sol]],
+                format!("direct pools: pool {direct} trades {jup} against {usdc}, not {sol}"),
+            ),
+            (
+                vec![[jup, sol], [jup, usdc]],
+                vec![[usdt, sol]],
+                format!(
+                    "direct pools: pool {second_direct} trades {jup} against {usdc}, not {sol}"
+                ),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![[usdt, ray]],
+                format!("bridges: pool {bridge} does not trade against SOL or USDC"),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![[sol, usdc]],
+                format!("bridges: pool {bridge} trades SOL against USDC, which is the conversion"),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![[usdt, sol], [usdt, usdc]],
+                format!("bridges: pool {second_bridge} trades {usdt} against {usdc}, not {sol}"),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![[usdt, sol], [ray, sol]],
+                format!("bridges: pool {second_bridge} trades {ray}, not {usdt}"),
+            ),
+            (
+                vec![[jup, sol]],
+                vec![[ray, sol]],
+                format!(
+                    "intermediate {jup_usdt} trading {jup} against {ray}: \
+                     pool does not match the declared mint pair"
+                ),
+            ),
+        ];
+        for (direct_pairs, bridge_pairs, error) in refusals {
+            assert_eq!(resolve(&direct_pairs, &bridge_pairs), Err(error));
+        }
+    }
+
+    /// A direct group's pools trade one target, at least one of them against
+    /// the settlement mint.
+    #[test]
+    fn a_direct_group_refuses_pools_that_disagree_on_their_target_or_settle_nowhere() {
+        let [jup, ray, first, second] = [(); 4].map(|_| Pubkey::new_unique());
+        let (sol, usdc) = (abi::SOL, abi::USDC);
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let resolve = |pairs: &[[Pubkey; 2]]| {
+            let keys = &[first, second][..pairs.len()];
+            let accounts: Vec<_> = keys
+                .iter()
+                .zip(pairs)
+                .map(|(&key, &pair)| (key, Some(cpmm_pool(pair))))
+                .collect();
+            let config = DirectConfig {
+                pools: keys.to_vec(),
+            };
+            let mut loader = AccountLoader::with_accounts(&rpc, &accounts);
+            Direct::resolve(&config, sol, &mut loader)
+                .map(|group| group.target)
+                .map_err(|e| format!("{e:#}"))
+        };
+        assert_eq!(resolve(&[[jup, usdc], [sol, jup]]), Ok(jup));
+        let refusals = [
+            (
+                vec![[jup, sol]],
+                "a direct group needs two pools".to_string(),
+            ),
+            (
+                vec![[jup, sol], [ray, sol]],
+                format!("pool {second} trades {ray}, not {jup}"),
+            ),
+            (
+                vec![[jup, usdc], [usdc, jup]],
+                format!("a direct group needs a pool quoted in {sol}"),
+            ),
+            (
+                vec![[jup, sol], [jup, ray]],
+                format!("pool {second} does not trade against SOL or USDC"),
+            ),
+        ];
+        for (pairs, error) in refusals {
+            assert_eq!(resolve(&pairs), Err(error));
+        }
+    }
 
     fn mint(wallet: Pubkey, mint: Pubkey) -> MintAccounts {
         MintAccounts::ata(&wallet, mint, abi::TOKEN).unwrap()

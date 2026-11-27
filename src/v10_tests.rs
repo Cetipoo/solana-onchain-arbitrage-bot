@@ -18,11 +18,13 @@ fn request() -> V10Instruction {
     }
 }
 
-fn pool(x: MintAccounts, base: MintAccounts) -> PoolAccounts {
+/// A Raydium CPMM pool's state trading `a` against `b`, with unique vaults,
+/// config and observation.
+pub(crate) fn cpmm_state([a, b]: [Pubkey; 2]) -> Vec<u8> {
     let mut state = vec![0; 328];
     for (offset, key) in [
-        (168, x.mint),
-        (200, base.mint),
+        (168, a),
+        (200, b),
         (72, Pubkey::new_unique()),
         (104, Pubkey::new_unique()),
         (8, Pubkey::new_unique()),
@@ -30,6 +32,11 @@ fn pool(x: MintAccounts, base: MintAccounts) -> PoolAccounts {
     ] {
         state[offset..offset + 32].copy_from_slice(key.as_ref());
     }
+    state
+}
+
+fn pool(x: MintAccounts, base: MintAccounts) -> PoolAccounts {
+    let state = cpmm_state([x.mint, base.mint]);
     PoolAccounts::from_state(Pubkey::new_unique(), CPMM, &state, x, base, &[], None).unwrap()
 }
 
