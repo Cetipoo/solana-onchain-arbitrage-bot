@@ -35,6 +35,17 @@ impl<'a> AccountLoader<'a> {
         }
     }
 
+    /// A loader that has fetched `accounts`, `None` where one does not exist.
+    #[cfg(test)]
+    pub(crate) fn with_accounts(
+        rpc: &'a RpcClient,
+        accounts: &[(Pubkey, Option<Account>)],
+    ) -> Self {
+        let mut loader = Self::new(rpc);
+        loader.accounts.extend(accounts.iter().cloned());
+        loader
+    }
+
     pub fn prefetch(&mut self, keys: impl IntoIterator<Item = Pubkey>) -> Result<()> {
         let missing: Vec<Pubkey> = keys
             .into_iter()
@@ -471,12 +482,6 @@ mod tests {
         }
     }
 
-    fn loader<'a>(rpc: &'a RpcClient, accounts: &[(Pubkey, Option<Account>)]) -> AccountLoader<'a> {
-        let mut loader = AccountLoader::new(rpc);
-        loader.accounts.extend(accounts.iter().cloned());
-        loader
-    }
-
     /// Each slot is the sysvar's first 8 bytes, read only from a sysvar
     /// account of the sysvar's size: the `Clock` struct's, or 8 bytes.
     #[test]
@@ -526,7 +531,7 @@ mod tests {
         let [global, vault] = abi::manifest_global(&mint);
         let global_account = Some(account(abi::MANIFEST, vec![0; 8]));
         let lists = |global_account: Option<Account>, vault_account: Option<Account>| {
-            loader(&rpc, &[(global, global_account), (vault, vault_account)])
+            AccountLoader::with_accounts(&rpc, &[(global, global_account), (vault, vault_account)])
                 .lists_manifest_global(&mint, &abi::TOKEN)
                 .unwrap()
         };
@@ -577,7 +582,7 @@ mod tests {
                 "{case}"
             );
         }
-        let unfetched = loader(&rpc, &[(vault, open(abi::TOKEN, mint, 165))]);
+        let unfetched = AccountLoader::with_accounts(&rpc, &[(vault, open(abi::TOKEN, mint, 165))]);
         assert_eq!(
             unfetched
                 .lists_manifest_global(&mint, &abi::TOKEN)
@@ -611,10 +616,13 @@ mod tests {
                 let mint = MintAccounts::ata(&wallet, Pubkey::new_unique(), program).unwrap();
                 (mint, hooked_mint(program, hook))
             });
-            let error = loader(&rpc, &[(x.0.mint, Some(x.1)), (base.0.mint, Some(base.1))])
-                .load_dlmm_pro(pool, &state, x.0, base.0)
-                .unwrap_err()
-                .to_string();
+            let error = AccountLoader::with_accounts(
+                &rpc,
+                &[(x.0.mint, Some(x.1)), (base.0.mint, Some(base.1))],
+            )
+            .load_dlmm_pro(pool, &state, x.0, base.0)
+            .unwrap_err()
+            .to_string();
             (error, [x.0.mint, base.0.mint])
         };
         let hook = |mint: Pubkey| {
@@ -672,7 +680,7 @@ mod tests {
         let update = |feed| Some(account(abi::PYTH_RECEIVER, price_update(1, feed, 133)));
         let with_data = Some(account(abi::BYREAL, vec![0; 8]));
         let check = |state: &Account, x, accounts: Vec<(Pubkey, Option<Account>)>| {
-            loader(&rpc, &accounts)
+            AccountLoader::with_accounts(&rpc, &accounts)
                 .check_byreal(pool, state, x, sol)
                 .map_err(|error| format!("{error:#}"))
         };

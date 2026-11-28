@@ -140,3 +140,24 @@ direct = ["5ht3AsCvksCLMp6Zcjf7zaLUsD1ripKMA7jAwgvDAes8"]       # Orca Whirlpool
 intermediate = "2jk7miWrsTbt5hUSaCXPkEQPvuUMgbFLpgMzMQw3Z6ar" # Hylo Stability Pool sHYUSD/hyUSD
 bridges = ["CMNPACEDebyvNJDgBxRc5fbScF8kmx52ZPBY4Cu4wuwS"]    # Hylo hyUSD/USDC
 direct = ["8cq1iHS25zc9b7XmTyHUqjk7DRjHBqJcM6x9Tt2XJnTu"]       # Orca Whirlpool sHYUSD/SOL
+
+# 3 hops: SOL -> jitoSOL -> xSOL -> SOL. The jitoSOL header pools jitoSOL
+# against both hyUSD and xSOL; the bridges' stock, xSOL, picks the conversion.
+[[transactions]]
+settlement = "SOL"
+[[transactions.triangle]]
+intermediate = "8Ri52tZXZehgAHKbx1MQiXhWXXkVsvAL9op6C5HytDKF" # Hylo jitoSOL header
+bridges = ["5ht3AsCvksCLMp6Zcjf7zaLUsD1ripKMA7jAwgvDAes8"]    # Orca Whirlpool xSOL/SOL
+direct = [
+    "Hp53XEtt4S8SvPCXarsLSdGfZBuUr5mMmZmX2DRNXQKp", # Orca Whirlpool jitoSOL/SOL
+    "BoeMUkCLHchTD31HdXsbDExuZZfcUppSLpYtV3LZTH6U", # Meteora DLMM jitoSOL/SOL
+]
+
+# 3 hops: USDC -> xHYPE -> HYPE -> USDC. The HYPE Exo pair pools HYPE against
+# hyUSD and xHYPE, and xHYPE against hyUSD.
+[[transactions]]
+settlement = "USDC"
+[[transactions.triangle]]
+intermediate = "42GzNWvZ1H1hwXaBZ8mbeVZaSEgh6zMm8BABdS3v1BEB" # Hylo HYPE Exo pair
+bridges = ["ANCx141SujgVdbKz9NTEH8F38qWsnyyXsVju64aU3qLB"]    # Meteora DLMM HYPE/USDC
+direct = ["8tp8GJADuYu2czhnaWzXYxpXTq2dwjribGwSav4J4m7e"]       # Meteora DLMM xHYPE/USDC
